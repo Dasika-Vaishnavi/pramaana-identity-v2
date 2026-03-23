@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@noble/hashes/sha3": "npm:@noble/hashes@1.7.1/sha3",
+    "@noble/hashes/hkdf": "npm:@noble/hashes@1.7.1/hkdf",
+    "mlkem": "npm:mlkem@^2.7.0"
+  }
+}
