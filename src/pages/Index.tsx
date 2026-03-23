@@ -194,22 +194,31 @@ const Index = () => {
           SECTION 1: HERO
       ═══════════════════════════════════════════════════════════════ */}
       <section className="relative px-6 pt-32 pb-20 lg:pt-48 lg:pb-28">
-        <div className="mx-auto max-w-2xl text-center">
+        <div className="mx-auto max-w-3xl text-center">
+          <motion.p
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="mb-5 text-xs font-semibold uppercase tracking-[0.3em] text-secondary"
+          >
+            Post-Quantum Identity
+          </motion.p>
+
           <motion.h1
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, ease: "easeOut" }}
-            className="text-4xl font-bold leading-[1.1] tracking-tight text-foreground sm:text-5xl lg:text-6xl"
-            style={{ textWrap: "balance" } as React.CSSProperties}
+            transition={{ duration: 0.7, delay: 0.1, ease: "easeOut" }}
+            className="text-5xl font-extrabold leading-[1.08] tracking-tight text-foreground sm:text-6xl lg:text-7xl"
           >
-            Your identity. Quantum-safe.{" "}
-            <span className="text-primary">Invisible.</span>
+            Prove you're real.
+            <br />
+            <span className="text-secondary">Stay invisible.</span>
           </motion.h1>
 
           <motion.p
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.15, ease: "easeOut" }}
+            transition={{ duration: 0.7, delay: 0.2, ease: "easeOut" }}
             className="mx-auto mt-6 max-w-lg text-lg leading-relaxed text-muted-foreground sm:text-xl"
             style={{ textWrap: "pretty" } as React.CSSProperties}
           >
@@ -219,21 +228,21 @@ const Index = () => {
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.3, ease: "easeOut" }}
-            className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center"
+            transition={{ duration: 0.6, delay: 0.35, ease: "easeOut" }}
+            className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:justify-center"
           >
-            <Button asChild size="lg" className="rounded-full px-8 active:scale-[0.97] transition-transform">
-              <Link to="/wallet-connect">
-                Scan My Wallet <ArrowRight className="ml-2 h-4 w-4" />
+            <Button asChild size="lg" className="rounded-full px-10 py-6 text-base active:scale-[0.97] transition-transform">
+              <Link to="/enroll">
+                Start Enrollment <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
             <Button
               variant="outline"
               size="lg"
-              className="rounded-full border-border/60 px-8 active:scale-[0.97] transition-transform"
+              className="rounded-full border-border/60 px-10 py-6 text-base active:scale-[0.97] transition-transform"
               onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}
             >
-              How it works
+              See How It Works
             </Button>
           </motion.div>
         </div>
