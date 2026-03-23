@@ -1,3 +1,9 @@
-# Welcome to your Lovable project
+**Pramaana: Post-Quantum Anonymous Identity Enrollment for the Multichain Era**
 
-TODO: Document your project here
+Pramaana implements a concrete post-quantum enrollment layer for the Anonymous Self-Credentials (ASC) framework introduced in IACR ePrint 2025/618. The original ASC paper achieves Sybil resistance, anonymity, and multi-verifier unlinkability simultaneously, but leaves the Identity Registry enrollment step as an open implementation question. Pramaana closes this gap.
+
+The core contribution is PALC (PII-Anchored Lattice Commitment): a scheme that consumes personally identifiable information as one-time cryptographic entropy, hashing it through SHA3-512, deriving a seed via HKDF, and generating a CRYSTALS-Kyber-1024 lattice commitment, then permanently erasing the PII. The resulting master identity is quantum-safe (256-bit security under MLWE), deterministic (same PII always produces the same commitment, enabling cryptographic Sybil resistance), and privacy-preserving (the commitment reveals nothing about the person).
+
+We built a complete working platform: real ML-KEM-1024 enrollment verified by a 10/10 cryptographic test suite, a Solidity Identity Registry deployed on Ethereum Sepolia with live on-chain transactions, a wallet security scanner analyzing quantum vulnerability and Sybil patterns via MetaMask integration, ZK membership proofs over Merkle trees of anonymity sets, multichain identity mirroring across Ethereum/Arbitrum/Base, a Claude-powered AI agent for natural language identity management, and BIP-360 migration planning for Bitcoin's post-quantum transition.
+
+The system formally preserves all six ASC security properties and strengthens Sybil resistance from a trust assumption to a cryptographic guarantee. Four theorems (hiding, binding, uniqueness, one-wayness) are proven under MLWE and verified against the actual implementation. Pramaana bridges two Shape Rotator hackathon papers, the ASC framework and the TEE attestation gap research, while providing quantum safety that existing identity systems won't achieve until 2035.
