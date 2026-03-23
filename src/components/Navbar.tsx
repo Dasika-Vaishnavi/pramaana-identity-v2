@@ -81,7 +81,7 @@ const Navbar = () => {
               </NavLink>
             ))}
             <a
-              href="https://github.com/pramaana"
+              href="https://github.com/Dasika-Vaishnavi/pramaana-identity-v2"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 rounded-md px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
