@@ -219,6 +219,38 @@ export type Database = {
           },
         ]
       }
+      merkle_roots: {
+        Row: {
+          computed_at: string
+          id: string
+          leaf_count: number
+          root_hash: string
+          set_id: number
+        }
+        Insert: {
+          computed_at?: string
+          id?: string
+          leaf_count?: number
+          root_hash: string
+          set_id: number
+        }
+        Update: {
+          computed_at?: string
+          id?: string
+          leaf_count?: number
+          root_hash?: string
+          set_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "merkle_roots_set_id_fkey"
+            columns: ["set_id"]
+            isOneToOne: false
+            referencedRelation: "anonymity_sets"
+            referencedColumns: ["set_id"]
+          },
+        ]
+      }
       multichain_registrations: {
         Row: {
           block_number: number | null
