@@ -419,11 +419,16 @@ const Index = () => {
       {/* ═══════════════════════════════════════════════════════════════
           SECTION 5: USE CASES (carousel)
       ═══════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-20 lg:py-28">
-        <div className="mx-auto max-w-5xl">
+      <section className="relative px-6 py-24 lg:py-32">
+        {/* Subtle accent background */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-primary/[0.03] via-transparent to-transparent" />
+        <div className="mx-auto max-w-5xl relative">
           <Reveal className="text-center">
             <SectionLabel>USE CASES</SectionLabel>
             <h2 className="text-3xl font-bold text-foreground sm:text-4xl lg:text-5xl">Built for real problems</h2>
+            <p className="mx-auto mt-4 max-w-md text-base text-muted-foreground">
+              From DAOs to healthcare, Pramaana solves identity where it matters most.
+            </p>
           </Reveal>
 
           <Reveal delay={0.15}>
