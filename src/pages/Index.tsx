@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { motion, useInView } from "framer-motion";
+import { motion, useInView, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,34 +9,29 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Eye, ShieldAlert, Link as LinkIcon, Fingerprint, UserCheck, LogIn,
-  Vote, Wallet, Globe, Bot, Gift, Heart, CheckCircle2, ArrowRight,
-  Shield, Users, Database, Zap, ChevronRight, ExternalLink,
+  Accordion, AccordionContent, AccordionItem, AccordionTrigger,
+} from "@/components/ui/accordion";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Eye, DatabaseZap, Link2, ShieldCheck, EyeOff, Fingerprint, Unlink,
+  ArrowRight, ChevronRight, ChevronLeft, Wallet, Bot, Vote,
+  Globe, Gift, Heart, MessageSquare, User,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-// ── Scroll-reveal wrapper ────────────────────────────────────────────────
+// ── Scroll-reveal ────────────────────────────────────────────────────────
 
-function Reveal({
-  children,
-  className = "",
-  delay = 0,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  delay?: number;
-}) {
+function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   const ref = useRef(null);
-  const inView = useInView(ref, { once: true, amount: 0.2 });
+  const inView = useInView(ref, { once: true, amount: 0.15 });
   return (
     <motion.div
       ref={ref}
-      initial={{ opacity: 0, y: 18, filter: "blur(4px)" }}
-      animate={inView ? { opacity: 1, y: 0, filter: "blur(0px)" } : {}}
-      transition={{
-        duration: 0.6,
-        delay,
-        ease: [0.16, 1, 0.3, 1],
-      }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={inView ? { opacity: 1, y: 0 } : {}}
+      transition={{ duration: 0.6, delay, ease: "easeOut" }}
       className={className}
     >
       {children}
@@ -48,124 +43,188 @@ function Reveal({
 
 function AnimatedNumber({ value }: { value: number }) {
   const [display, setDisplay] = useState(0);
+  const ref = useRef(0);
   useEffect(() => {
     if (value === 0) { setDisplay(0); return; }
-    const duration = 1200;
+    const dur = 1200;
     const start = performance.now();
-    const from = display;
+    const from = ref.current;
     const step = (now: number) => {
-      const t = Math.min((now - start) / duration, 1);
+      const t = Math.min((now - start) / dur, 1);
       const ease = 1 - Math.pow(1 - t, 3);
-      setDisplay(Math.round(from + (value - from) * ease));
+      const v = Math.round(from + (value - from) * ease);
+      setDisplay(v);
+      ref.current = v;
       if (t < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
   return <span className="tabular-nums">{display.toLocaleString()}</span>;
 }
 
+// ── Section label ────────────────────────────────────────────────────────
+
+const SectionLabel = ({ children }: { children: string }) => (
+  <p className="mb-3 text-xs font-semibold uppercase tracking-[0.25em] text-primary">{children}</p>
+);
+
+// ── Use case data ────────────────────────────────────────────────────────
+
+const USE_CASES = [
+  {
+    icon: Vote,
+    title: "Fair voting",
+    short: "One person, one vote — even in DAOs where wallets are free.",
+    detail: "In DAOs like MakerDAO, a whale can create 50 wallets and dominate votes. With Pramaana, each DAO member enrolls once. The nullifier per proposal ensures one vote per human. The ZK proof hides which member voted, preserving ballot secrecy.",
+  },
+  {
+    icon: Wallet,
+    title: "Private DeFi",
+    short: "Access financial services without handing over your passport.",
+    detail: "Centralized exchanges require KYC — passport scans that sit in hackable databases. Pramaana lets you prove you're a unique person using your ID as cryptographic entropy, but the exchange never stores your ID. If breached, attackers find only commitment hashes.",
+  },
+  {
+    icon: Bot,
+    title: "Bot-free social",
+    short: "Prove you're human. Keep your name to yourself.",
+    detail: "Twitter's bot problem persists despite $8/month verification. Pramaana gives each person one enrollment. The nullifier per platform means one account per human. The platform never learns your real name.",
+  },
+  {
+    icon: Globe,
+    title: "EU Digital Identity",
+    short: "Quantum-safe credentials for the EUDI Wallet.",
+    detail: "The EU mandates digital identity wallets by 2027, with post-quantum requirements. Pramaana's Kyber-1024 enrollment meets this mandate today. Citizens derive separate pseudonyms for bank, healthcare, and tax — unlinkable by design.",
+  },
+  {
+    icon: Gift,
+    title: "Fair airdrops",
+    short: "Stop Sybil farmers from taking what's meant for real users.",
+    detail: "LayerZero and Starknet lost 30-50% of airdrops to Sybil farmers. With Pramaana, one PII = one commitment = one claim. No centralized Sybil checker needed — the cryptography enforces fairness.",
+  },
+  {
+    icon: Heart,
+    title: "Healthcare privacy",
+    short: "Your hospital can't see your pharmacy. By design.",
+    detail: "With Pramaana, you derive separate pseudonyms for hospital, pharmacy, and insurer. None can cross-reference your records. Within each service, Sybil resistance prevents duplicate patient records.",
+  },
+];
+
+// ── Comparison data ──────────────────────────────────────────────────────
+
+const COMPARISON_ROWS = [
+  { feature: "Stores your PII", vals: ["red", "red", "amber", "green"], labels: ["", "", "", "Never"] },
+  { feature: "Tracks across services", vals: ["red", "red", "red", "green"], labels: ["", "", "", "Impossible"] },
+  { feature: "Quantum resistant", vals: ["red", "red", "red", "green"], labels: ["", "", "", "Kyber-1024"] },
+  { feature: "Sybil resistant", vals: ["amber", "green", "red", "green"], labels: ["", "", "", "Cryptographic"] },
+  { feature: "Survives a breach", vals: ["red", "red", "amber", "green"], labels: ["", "", "", "Nothing to leak"] },
+];
+
+const DOT_COLORS: Record<string, string> = {
+  red: "bg-destructive",
+  amber: "bg-amber-500",
+  green: "bg-green-500",
+};
+
 // ── Main page ────────────────────────────────────────────────────────────
 
 const Index = () => {
+  // Stats
   const [identities, setIdentities] = useState(0);
   const [onChain, setOnChain] = useState(0);
-  const [anonSets, setAnonSets] = useState(0);
   const [sybilBlocked, setSybilBlocked] = useState(0);
+
+  // Use case modal
+  const [activeCase, setActiveCase] = useState<number | null>(null);
+  const [carouselIdx, setCarouselIdx] = useState(0);
+  const carouselTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stepper
+  const [expandedStep, setExpandedStep] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     const load = async () => {
-      const [c1, c2, c3] = await Promise.all([
+      const [c1, c2] = await Promise.all([
         supabase.from("commitments").select("*", { count: "exact", head: true }),
         supabase.from("commitments").select("*", { count: "exact", head: true }).not("tx_hash", "is", null),
-        supabase.from("anonymity_sets").select("*", { count: "exact", head: true }),
       ]);
       setIdentities(c1.count ?? 0);
       setOnChain(c2.count ?? 0);
-      setAnonSets(c3.count ?? 0);
-      setSybilBlocked(3); // mock for now
+      setSybilBlocked(3);
     };
     load();
 
     const channel = supabase
       .channel("landing-live")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "commitments" }, () =>
-        setIdentities((n) => n + 1)
-      )
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "anonymity_sets" }, () =>
-        setAnonSets((n) => n + 1)
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "commitments" }, () => setIdentities((n) => n + 1))
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // Carousel auto-advance
+  const maxVisible = typeof window !== "undefined" && window.innerWidth < 768 ? 1 : 3;
+  const maxIdx = Math.max(0, USE_CASES.length - maxVisible);
+
+  useEffect(() => {
+    carouselTimer.current = setInterval(() => {
+      setCarouselIdx((i) => (i >= maxIdx ? 0 : i + 1));
+    }, 5000);
+    return () => { if (carouselTimer.current) clearInterval(carouselTimer.current); };
+  }, [maxIdx]);
+
+  const nudgeCarousel = useCallback((dir: -1 | 1) => {
+    if (carouselTimer.current) clearInterval(carouselTimer.current);
+    setCarouselIdx((i) => Math.max(0, Math.min(maxIdx, i + dir)));
+  }, [maxIdx]);
+
   return (
     <div className="relative overflow-x-hidden">
-      {/* ══ Animated gradient bg ══ */}
+      {/* Subtle gradient bg */}
       <div className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 animate-[heroShift_18s_ease-in-out_infinite_alternate]"
+        <div
+          className="absolute inset-0"
           style={{
             background:
-              "radial-gradient(ellipse 90% 70% at 40% 30%, hsla(255, 48%, 23%, 0.55), transparent 65%), radial-gradient(ellipse 70% 60% at 70% 75%, hsla(165, 78%, 17%, 0.45), transparent 60%)",
+              "radial-gradient(ellipse 80% 60% at 40% 20%, hsla(270, 60%, 20%, 0.35), transparent 60%), radial-gradient(ellipse 60% 50% at 75% 80%, hsla(174, 60%, 14%, 0.3), transparent 55%)",
           }}
         />
       </div>
-      <style>{`
-        @keyframes heroShift {
-          0%   { opacity:.85; transform:scale(1) }
-          50%  { opacity:1;   transform:scale(1.04) translateY(-8px) }
-          100% { opacity:.85; transform:scale(1) }
-        }
-      `}</style>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          HERO
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="relative px-6 pt-28 pb-20 lg:pt-44 lg:pb-28">
-        <div className="mx-auto max-w-3xl text-center">
-          <motion.p
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            className="mb-5 text-xs font-semibold uppercase tracking-[0.25em] text-secondary"
-          >
-            Post-Quantum Identity
-          </motion.p>
-
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 1: HERO
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="relative px-6 pt-32 pb-20 lg:pt-48 lg:pb-28">
+        <div className="mx-auto max-w-2xl text-center">
           <motion.h1
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
-            className="text-4xl font-bold leading-[1.06] tracking-tight text-foreground sm:text-5xl lg:text-[3.5rem]"
-            style={{ textWrap: "balance" }}
+            transition={{ duration: 0.7, ease: "easeOut" }}
+            className="text-4xl font-bold leading-[1.08] tracking-tight text-foreground sm:text-5xl lg:text-[3.5rem]"
+            style={{ textWrap: "balance" } as React.CSSProperties}
           >
-            Prove you're real.{" "}
-            <span className="text-secondary">Stay invisible.</span>
+            Your identity. Quantum-safe.{" "}
+            <span className="text-primary">Invisible.</span>
           </motion.h1>
 
           <motion.p
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-muted-foreground sm:text-lg"
-            style={{ textWrap: "pretty" }}
+            transition={{ duration: 0.7, delay: 0.15, ease: "easeOut" }}
+            className="mx-auto mt-6 max-w-lg text-base leading-relaxed text-muted-foreground sm:text-lg"
+            style={{ textWrap: "pretty" } as React.CSSProperties}
           >
-            Pramaana is a post-quantum identity enrollment system. Your personal
-            data is consumed once as cryptographic entropy — then permanently
-            erased. No database stores your identity. No service can track you.
-            No quantum computer can reverse it.
+            Prove you're a unique real person to any service — without anyone knowing who you are.
           </motion.p>
 
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.6, delay: 0.3, ease: "easeOut" }}
             className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center"
           >
-            <Button asChild size="lg" className="rounded-full bg-primary px-8 text-primary-foreground hover:bg-primary/85 active:scale-[0.97] transition-transform">
-              <Link to="/enroll">
-                Start Enrollment <ArrowRight className="ml-2 h-4 w-4" />
+            <Button asChild size="lg" className="rounded-full px-8 active:scale-[0.97] transition-transform">
+              <Link to="/wallet-connect">
+                Scan My Wallet <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
             <Button
@@ -174,78 +233,58 @@ const Index = () => {
               className="rounded-full border-border/60 px-8 active:scale-[0.97] transition-transform"
               onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}
             >
-              See How It Works
+              How it works
             </Button>
           </motion.div>
         </div>
 
-        {/* Live stats */}
+        {/* Live stats — understated */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7, delay: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="mx-auto mt-16 grid max-w-3xl grid-cols-2 gap-4 sm:grid-cols-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.8, delay: 0.6 }}
+          className="mx-auto mt-20 flex max-w-md justify-center gap-10 text-center"
         >
           {[
-            { label: "Identities Enrolled", value: identities, icon: Users },
-            { label: "On-Chain Confirmations", value: onChain, icon: Shield },
-            { label: "Anonymity Sets", value: anonSets, icon: Database },
-            { label: "Sybil Attacks Blocked", value: sybilBlocked, icon: Zap },
-          ].map(({ label, value, icon: Icon }) => (
-            <Card key={label} className="border-border/40 bg-card/50 backdrop-blur-sm">
-              <CardContent className="flex flex-col items-center gap-1.5 px-3 py-5 text-center">
-                <Icon className="h-4 w-4 text-secondary/70" />
-                <p className="font-mono text-2xl font-bold text-foreground">
-                  <AnimatedNumber value={value} />
-                </p>
-                <p className="text-[11px] leading-tight text-muted-foreground">{label}</p>
-                <span className="inline-flex items-center gap-1 text-[9px] font-medium text-green-400">
-                  <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-green-400" />
-                  Live
-                </span>
-              </CardContent>
-            </Card>
+            { label: "identities enrolled", value: identities },
+            { label: "on-chain confirmations", value: onChain },
+            { label: "Sybil attacks blocked", value: sybilBlocked },
+          ].map(({ label, value }) => (
+            <div key={label}>
+              <p className="font-mono text-2xl font-bold text-foreground">
+                <AnimatedNumber value={value} />
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">{label}</p>
+            </div>
           ))}
         </motion.div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          THE PROBLEM
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-24 lg:py-32">
-        <div className="mx-auto max-w-5xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              Your identity is broken
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 2: THE PROBLEM
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <div className="mx-auto max-w-4xl">
+          <Reveal className="text-center">
+            <SectionLabel>THE PROBLEM</SectionLabel>
+            <h2 className="text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" } as React.CSSProperties}>
+              Every time you log in, you leave a trail
             </h2>
           </Reveal>
 
-          <div className="mt-14 grid gap-6 md:grid-cols-3">
+          <div className="mt-14 grid gap-5 md:grid-cols-3">
             {[
-              {
-                icon: Eye,
-                title: "Google / OAuth SSO",
-                desc: "Google sees every service you log into. One breach exposes your activity across all platforms. A single point of failure controls billions of identities.",
-              },
-              {
-                icon: ShieldAlert,
-                title: "KYC & Government ID",
-                desc: "Aadhaar, SSN, passport scans sit in centralized databases. Coinbase's 2025 breach exposed millions of users' personal documents. The data exists, so it can be stolen.",
-              },
-              {
-                icon: LinkIcon,
-                title: "Web3 Wallets & DIDs",
-                desc: "Every transaction on Ethereum is publicly traceable. Using the same wallet across DeFi protocols creates a complete activity graph. There's no quantum protection either.",
-              },
-            ].map(({ icon: Icon, title, desc }, i) => (
-              <Reveal key={title} delay={i * 0.1}>
-                <Card className="group h-full border-border/40 bg-card/50 backdrop-blur-sm transition-shadow duration-300 hover:shadow-lg hover:shadow-destructive/5">
-                  <CardContent className="flex flex-col gap-4 p-7">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-destructive/10 text-destructive transition-transform duration-200 group-hover:scale-105">
-                      <Icon className="h-5 w-5" />
+              { icon: Eye, text: "Google sees every service you visit through OAuth" },
+              { icon: DatabaseZap, text: "KYC databases get breached — Coinbase 2025 exposed millions" },
+              { icon: Link2, text: "Your blockchain wallet links all your activity publicly" },
+            ].map(({ icon: Icon, text }, i) => (
+              <Reveal key={text} delay={i * 0.1}>
+                <Card className="border-[1px] border-white/[0.06] bg-card/50 backdrop-blur-sm">
+                  <CardContent className="flex flex-col items-center gap-4 p-7 text-center">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-destructive/10">
+                      <Icon className="h-5 w-5 text-destructive" />
                     </div>
-                    <h3 className="text-lg font-semibold text-foreground">{title}</h3>
-                    <p className="text-sm leading-relaxed text-muted-foreground">{desc}</p>
+                    <p className="text-sm leading-relaxed text-muted-foreground">{text}</p>
                   </CardContent>
                 </Card>
               </Reveal>
@@ -253,192 +292,313 @@ const Index = () => {
           </div>
 
           <Reveal delay={0.3}>
-            <p className="mt-10 text-center text-base font-medium text-secondary">
-              Pramaana eliminates all three problems.
+            <p className="mt-10 text-center text-sm text-muted-foreground">
+              What if you could prove you're real without revealing anything about yourself?
             </p>
           </Reveal>
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          HOW IT WORKS
-      ════════════════════════════════════════════════════════════════════ */}
-      <section id="how-it-works" className="px-6 py-24 lg:py-32">
-        <div className="mx-auto max-w-5xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              One enrollment. Unlimited services. Zero tracking.
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 3: HOW IT WORKS
+      ══════════════════════════════════════════════════════════════════ */}
+      <section id="how-it-works" className="px-6 py-20 lg:py-28">
+        <div className="mx-auto max-w-2xl">
+          <Reveal className="text-center">
+            <SectionLabel>HOW IT WORKS</SectionLabel>
+            <h2 className="text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" } as React.CSSProperties}>
+              Three steps. One identity. Zero traces.
             </h2>
           </Reveal>
 
-          <div className="relative mt-16 grid gap-8 md:grid-cols-3">
-            {/* Connecting line (desktop) */}
-            <div className="pointer-events-none absolute top-[3.5rem] left-[16.5%] right-[16.5%] hidden h-px bg-gradient-to-r from-primary/40 via-secondary/40 to-primary/40 md:block" />
-
+          <Accordion
+            type="single"
+            collapsible
+            value={expandedStep}
+            onValueChange={setExpandedStep}
+            className="mt-14 space-y-4"
+          >
             {[
               {
-                icon: Fingerprint,
-                step: 1,
+                value: "step-1",
+                num: "01",
                 title: "Enroll once",
-                desc: "Your government ID or biometric is used as cryptographic entropy. HKDF-SHA3-512 derives a seed. Kyber-1024 generates a quantum-safe commitment. Your PII is consumed and permanently erased — it never touches a database.",
-                label: "PALC.Commit (Pramaana Paper §3.2)",
+                collapsed: "Your government ID is used as cryptographic fuel — then permanently destroyed.",
+                expanded: "Pramaana takes your PII (government ID + biometric), hashes it with SHA3-512, derives a 64-byte seed through HKDF, and generates a CRYSTALS-Kyber-1024 quantum-safe keypair. The commitment Φ = H(pk ‖ ciphertext) goes on-chain. Your PII is mathematically consumed — it cannot be recovered from the commitment by anyone, including quantum computers. This is the PALC.Commit algorithm from the Pramaana paper.",
+                badge: "ML-KEM-1024 · SHA3-512 · HKDF · NIST FIPS 203",
               },
               {
-                icon: UserCheck,
-                step: 2,
+                value: "step-2",
+                num: "02",
                 title: "Register privately",
-                desc: "For each service, a unique pseudonym and nullifier are derived from your master key. The nullifier ensures one account per service (Sybil resistance). Different services get completely different nullifiers — unlinkable even if they collude.",
-                label: "ASC.Prove (IACR 2025/618 §4.2)",
+                collapsed: "Each service gets a unique pseudonym. None of them can be linked.",
+                expanded: "When you register with a service, Pramaana derives a child key specific to that service using HKDF(your_random_key, service_name). This becomes a secp256k1 pseudonym — your username for that service. A deterministic nullifier H(master_key ‖ service_name) ensures you can only register once per service (Sybil resistance). But different services get completely different nullifiers — even if every service in the world colludes, they cannot connect your accounts. This is the ASC.Prove protocol from IACR 2025/618.",
+                badge: "Schnorr · secp256k1 · HKDF · Nullifier",
               },
               {
-                icon: LogIn,
-                step: 3,
+                value: "step-3",
+                num: "03",
                 title: "Authenticate freely",
-                desc: "Log in using Schnorr signature challenge-response with your service-specific child key. No interaction with the Identity Registry needed — this eliminates the timing attacks that plague traditional SSO systems.",
-                label: "U2SSO Authentication (2025/618 §6.3.4)",
+                collapsed: "Log in with a signature. No passwords. No tracking.",
+                expanded: "Authentication uses standard Schnorr challenge-response. The service sends a random challenge, you sign it with your child key, they verify against your pseudonym. The Identity Registry is never contacted — there's no timing side-channel for anyone to exploit. This is the U2SSO authentication protocol from Figure 3 of the ASC paper.",
+                badge: "Schnorr signatures · Zero IdR interaction · No timing attacks",
               },
-            ].map(({ icon: Icon, step, title, desc, label }, i) => (
-              <Reveal key={title} delay={i * 0.12}>
-                <Card className="group relative h-full border-border/40 bg-card/50 backdrop-blur-sm transition-all duration-300 hover:shadow-lg hover:shadow-primary/5 hover:-translate-y-1">
-                  <CardContent className="flex flex-col gap-4 p-7">
-                    <div className="relative z-10 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
-                      <Icon className="h-6 w-6" />
+            ].map(({ value, num, title, collapsed, expanded, badge }, i) => (
+              <Reveal key={value} delay={i * 0.1}>
+                <AccordionItem value={value} className="border-[1px] border-white/[0.06] rounded-xl bg-card/50 backdrop-blur-sm px-6 overflow-hidden">
+                  <AccordionTrigger className="hover:no-underline py-5 gap-4">
+                    <div className="flex items-center gap-4 text-left">
+                      <span className="font-mono text-2xl font-bold text-primary/40">{num}</span>
+                      <div>
+                        <p className="text-base font-semibold text-foreground">{title}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{collapsed}</p>
+                      </div>
                     </div>
-                    <Badge variant="outline" className="w-fit border-border/60 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                      Step {step}
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-5 pl-14">
+                    <p className="text-sm leading-relaxed text-muted-foreground">{expanded}</p>
+                    <Badge variant="outline" className="mt-3 border-primary/20 text-[10px] font-mono text-primary/70">
+                      {badge}
                     </Badge>
-                    <h3 className="text-xl font-semibold text-foreground">{title}</h3>
-                    <p className="text-sm leading-relaxed text-muted-foreground">{desc}</p>
-                    <p className="mt-auto pt-2 font-mono text-[11px] text-primary/70">{label}</p>
-                  </CardContent>
-                </Card>
+                  </AccordionContent>
+                </AccordionItem>
               </Reveal>
             ))}
-          </div>
+          </Accordion>
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          USE CASES
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-24 lg:py-32">
-        <div className="mx-auto max-w-5xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              Where Pramaana changes everything
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 4: WHY PRAMAANA
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <div className="mx-auto max-w-3xl">
+          <Reveal className="text-center">
+            <SectionLabel>WHY PRAMAANA</SectionLabel>
+            <h2 className="text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" } as React.CSSProperties}>
+              Not just another identity solution
             </h2>
           </Reveal>
 
-          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-14 grid gap-5 sm:grid-cols-2">
             {[
-              { icon: Vote, title: "DAO Voting", problem: "Whales create 50 wallets and vote 50 times", solution: "One enrollment = one vote. Nullifier enforces single-use per proposal. Zero-knowledge proof hides which member voted." },
-              { icon: Wallet, title: "DeFi Without KYC Leaks", problem: "Exchanges store passport scans that get breached", solution: "Prove you're a unique person without revealing your ID. If the exchange is hacked, attackers find only commitment hashes — meaningless without the erased PII." },
-              { icon: Globe, title: "EU Digital Identity (EUDI Wallet)", problem: "EU needs post-quantum credential solutions by 2027", solution: "Pramaana slots directly into EUDI as the enrollment layer. Citizen derives separate pseudonyms for bank, healthcare, tax — none linkable to each other." },
-              { icon: Bot, title: "Anti-Bot Social Media", problem: "Bulk SIM cards and paid verification don't stop bots", solution: "Each real person gets one enrollment. Nullifier per platform means one account per human. Platform never learns your real name." },
-              { icon: Gift, title: "Fair Airdrop Distribution", problem: "30-50% of crypto airdrops go to Sybil farmers", solution: "One PII = one commitment = one claim. The math enforces fairness. No centralized Sybil checker needed." },
-              { icon: Heart, title: "Anonymous Healthcare", problem: "Hospital, pharmacy, and insurer can cross-reference your records", solution: "Separate pseudonyms for each medical service. Within each, you're Sybil-resistant. Across them, you're completely unlinkable." },
-            ].map(({ icon: Icon, title, problem, solution }, i) => (
-              <Reveal key={title} delay={i * 0.08}>
-                <Card className="group h-full border-l-2 border-l-primary/30 border-t-0 border-r-border/40 border-b-border/40 bg-card/50 backdrop-blur-sm transition-all duration-300 hover:border-l-secondary/50 hover:shadow-md">
-                  <CardContent className="flex flex-col gap-3 p-6">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
-                      <Icon className="h-4.5 w-4.5" />
+              { icon: ShieldCheck, name: "Quantum-safe", desc: "Protected by lattice cryptography that quantum computers can't break." },
+              { icon: EyeOff, name: "Truly private", desc: "Your personal data is consumed during enrollment and permanently erased." },
+              { icon: Fingerprint, name: "Sybil-resistant", desc: "One real person = one identity. The math prevents duplicates." },
+              { icon: Unlink, name: "Unlinkable", desc: "Services cannot determine if two accounts belong to the same person." },
+            ].map(({ icon: Icon, name, desc }, i) => (
+              <Reveal key={name} delay={i * 0.08}>
+                <Card className="border-[1px] border-white/[0.06] bg-card/50 backdrop-blur-sm h-full">
+                  <CardContent className="flex items-start gap-4 p-6">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                      <Icon className="h-5 w-5 text-primary" />
                     </div>
-                    <h3 className="text-base font-semibold text-foreground">{title}</h3>
-                    <p className="text-sm leading-relaxed text-destructive/80">
-                      <span className="font-medium">Problem:</span> {problem}
-                    </p>
-                    <p className="text-sm leading-relaxed text-secondary/90">
-                      <span className="font-medium">Solution:</span> {solution}
-                    </p>
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{name}</p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{desc}</p>
+                    </div>
                   </CardContent>
                 </Card>
               </Reveal>
             ))}
           </div>
-        </div>
-      </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          SECURITY PROPERTIES
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-24 lg:py-32">
-        <div className="mx-auto max-w-4xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              Mathematically proven guarantees
-            </h2>
+          <Reveal delay={0.35}>
+            <p className="mt-8 text-center">
+              <button
+                onClick={() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth" })}
+                className="text-sm text-primary hover:underline underline-offset-4 transition-colors"
+              >
+                See how we compare →
+              </button>
+            </p>
           </Reveal>
-
-          <div className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              { name: "Hiding (MLWE)", desc: "Commitment reveals nothing about your PII to any observer" },
-              { name: "Binding (SHA3-512)", desc: "No two different PIIs can produce the same commitment" },
-              { name: "Sybil resistance", desc: "Same identity + same service = same nullifier = rejected on retry" },
-              { name: "Anonymity", desc: "Proofs hide which identity in the anonymity set generated them" },
-              { name: "Multi-verifier unlinkability", desc: "Different services cannot determine you're the same person" },
-              { name: "Post-quantum (Kyber-1024)", desc: "256-bit security against quantum computers via NIST FIPS 203" },
-            ].map(({ name, desc }, i) => (
-              <Reveal key={name} delay={i * 0.07}>
-                <div className="flex items-start gap-3 rounded-xl border border-border/40 bg-card/40 p-5 backdrop-blur-sm">
-                  <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-400" />
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">{name}</p>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{desc}</p>
-                  </div>
-                </div>
-              </Reveal>
-            ))}
-          </div>
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          COMPARISON TABLE
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-24 lg:py-32">
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 5: USE CASES (carousel)
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
         <div className="mx-auto max-w-5xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              How Pramaana compares
-            </h2>
+          <Reveal className="text-center">
+            <SectionLabel>USE CASES</SectionLabel>
+            <h2 className="text-3xl font-bold text-foreground sm:text-4xl">Built for real problems</h2>
           </Reveal>
 
           <Reveal delay={0.15}>
-            <div className="mt-14 overflow-x-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
+            <div className="relative mt-14">
+              {/* Navigation arrows */}
+              <button
+                onClick={() => nudgeCarousel(-1)}
+                disabled={carouselIdx === 0}
+                className="absolute -left-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-border/40 bg-card/80 p-2 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30 hidden md:block"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => nudgeCarousel(1)}
+                disabled={carouselIdx >= maxIdx}
+                className="absolute -right-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-border/40 bg-card/80 p-2 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30 hidden md:block"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+
+              <div className="overflow-hidden">
+                <motion.div
+                  className="flex gap-5"
+                  animate={{ x: `-${carouselIdx * (100 / maxVisible + 5 / maxVisible)}%` }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                >
+                  {USE_CASES.map(({ icon: Icon, title, short }, i) => (
+                    <button
+                      key={title}
+                      onClick={() => setActiveCase(i)}
+                      className={cn(
+                        "shrink-0 text-left rounded-xl border border-white/[0.06] bg-card/50 backdrop-blur-sm p-6 transition-all hover:border-primary/20 hover:shadow-lg hover:shadow-primary/5",
+                        maxVisible === 1 ? "w-full" : "w-[calc(33.333%-14px)]"
+                      )}
+                    >
+                      <Icon className="h-5 w-5 text-secondary mb-3" />
+                      <p className="text-sm font-semibold text-foreground">{title}</p>
+                      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{short}</p>
+                    </button>
+                  ))}
+                </motion.div>
+              </div>
+
+              {/* Dots */}
+              <div className="mt-6 flex justify-center gap-1.5">
+                {Array.from({ length: maxIdx + 1 }).map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { if (carouselTimer.current) clearInterval(carouselTimer.current); setCarouselIdx(i); }}
+                    className={cn("h-1.5 rounded-full transition-all", i === carouselIdx ? "w-6 bg-primary" : "w-1.5 bg-muted-foreground/30")}
+                  />
+                ))}
+              </div>
+            </div>
+          </Reveal>
+
+          {/* Use case modal */}
+          <Dialog open={activeCase !== null} onOpenChange={() => setActiveCase(null)}>
+            {activeCase !== null && (
+              <DialogContent className="border-white/[0.06] bg-card/95 backdrop-blur-xl max-w-md">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 text-foreground">
+                    {(() => { const Icon = USE_CASES[activeCase].icon; return <Icon className="h-5 w-5 text-secondary" />; })()}
+                    {USE_CASES[activeCase].title}
+                  </DialogTitle>
+                  <DialogDescription className="text-sm leading-relaxed text-muted-foreground pt-2">
+                    {USE_CASES[activeCase].detail}
+                  </DialogDescription>
+                </DialogHeader>
+              </DialogContent>
+            )}
+          </Dialog>
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 6: WALLET SCANNER TEASER
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <Reveal className="mx-auto max-w-3xl">
+          <Card className="border-[1px] border-primary/20 bg-card/50 backdrop-blur-sm overflow-hidden relative">
+            <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-secondary/5 pointer-events-none" />
+            <CardContent className="relative flex flex-col items-center gap-5 p-10 text-center">
+              <Wallet className="h-8 w-8 text-primary" />
+              <h2 className="text-2xl font-bold text-foreground sm:text-3xl">Is your wallet quantum-safe?</h2>
+              <p className="max-w-lg text-sm text-muted-foreground">
+                Connect MetaMask or paste any address. We'll analyze your quantum exposure, Sybil vulnerability,
+                and transaction threat patterns in seconds.
+              </p>
+              <Button asChild size="lg" className="rounded-full px-8 mt-2 active:scale-[0.97] transition-transform">
+                <Link to="/wallet-connect">
+                  Scan My Wallet <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+              <p className="text-[11px] text-muted-foreground/60">Works with any Ethereum address. No connection required.</p>
+            </CardContent>
+          </Card>
+        </Reveal>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 7: AI AGENT TEASER
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <Reveal className="mx-auto max-w-2xl">
+          <Card className="border-[1px] border-white/[0.06] bg-card/50 backdrop-blur-sm overflow-hidden">
+            <CardContent className="p-8 space-y-5">
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <MessageSquare className="h-4 w-4 text-secondary" />
+                Pramaana Agent
+              </div>
+
+              {/* Mock chat */}
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted">
+                    <User className="h-3.5 w-3.5 text-muted-foreground" />
+                  </div>
+                  <div className="rounded-xl rounded-tl-none border border-border/40 bg-muted/30 px-4 py-2.5 text-xs text-foreground">
+                    Is my Bitcoin wallet safe from quantum computers?
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                    <Bot className="h-3.5 w-3.5 text-primary" />
+                  </div>
+                  <div className="rounded-xl rounded-tl-none border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs text-muted-foreground leading-relaxed">
+                    Your address bc1q... has sent 23 transactions, exposing your ECDSA public key each time. Current risk: <span className="font-semibold text-destructive">HIGH</span>. I can help you create a quantum-safe Pramaana identity and plan a migration to BIP-360 compatible addresses.
+                  </div>
+                </div>
+              </div>
+
+              <Button asChild variant="outline" className="w-full rounded-full active:scale-[0.97] transition-transform">
+                <Link to="/agent">
+                  Talk to the Pramaana Agent <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+              <p className="text-[11px] text-center text-muted-foreground/60">AI-powered identity management.</p>
+            </CardContent>
+          </Card>
+        </Reveal>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 8: COMPARISON TABLE
+      ══════════════════════════════════════════════════════════════════ */}
+      <section id="comparison" className="px-6 py-20 lg:py-28">
+        <div className="mx-auto max-w-4xl">
+          <Reveal className="text-center">
+            <SectionLabel>COMPARISON</SectionLabel>
+            <h2 className="text-3xl font-bold text-foreground sm:text-4xl">How Pramaana compares</h2>
+          </Reveal>
+
+          <Reveal delay={0.15}>
+            <div className="mt-14 overflow-x-auto rounded-xl border border-white/[0.06] bg-card/50 backdrop-blur-sm">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-border/40">
-                    <TableHead className="text-muted-foreground">Feature</TableHead>
-                    <TableHead className="text-muted-foreground">Google OAuth</TableHead>
-                    <TableHead className="text-muted-foreground">KYC / Aadhaar</TableHead>
-                    <TableHead className="text-muted-foreground">Web3 DID</TableHead>
-                    <TableHead className="text-secondary font-semibold">Pramaana</TableHead>
+                  <TableRow className="border-border/30 hover:bg-transparent">
+                    <TableHead className="text-muted-foreground text-xs" />
+                    <TableHead className="text-muted-foreground text-xs text-center">Google OAuth</TableHead>
+                    <TableHead className="text-muted-foreground text-xs text-center">KYC / Aadhaar</TableHead>
+                    <TableHead className="text-muted-foreground text-xs text-center">Web3 DID</TableHead>
+                    <TableHead className="text-primary text-xs font-semibold text-center">Pramaana</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {[
-                    { feature: "PII stored by provider", vals: ["Yes", "Yes", "On-chain", "Never"], colors: ["r", "r", "y", "g"] },
-                    { feature: "Tracks across services", vals: ["Yes", "Yes", "Publicly", "Impossible"], colors: ["r", "r", "r", "g"] },
-                    { feature: "Sybil resistant", vals: ["Weak (email)", "Strong", "Weak (wallets)", "Cryptographic"], colors: ["r", "g", "r", "g"] },
-                    { feature: "Quantum safe", vals: ["No", "No", "No", "Yes (Kyber-1024)"], colors: ["r", "r", "r", "g"] },
-                    { feature: "Single point of failure", vals: ["Google", "Government DB", "Ledger", "None"], colors: ["r", "r", "y", "g"] },
-                    { feature: "Post-breach exposure", vals: ["Full activity log", "ID documents", "Wallet graph", "Nothing (PII erased)"], colors: ["r", "r", "r", "g"] },
-                  ].map(({ feature, vals, colors }) => (
-                    <TableRow key={feature} className="border-border/30">
-                      <TableCell className="font-medium text-foreground">{feature}</TableCell>
-                      {vals.map((v, i) => (
-                        <TableCell
-                          key={i}
-                          className={
-                            colors[i] === "g"
-                              ? "bg-green-500/8 text-green-400 font-medium"
-                              : colors[i] === "r"
-                              ? "text-destructive/80"
-                              : "text-yellow-400/80"
-                          }
-                        >
-                          {v}
+                  {COMPARISON_ROWS.map(({ feature, vals, labels }) => (
+                    <TableRow key={feature} className="border-border/20">
+                      <TableCell className="text-xs font-medium text-foreground">{feature}</TableCell>
+                      {vals.map((color, i) => (
+                        <TableCell key={i} className="text-center">
+                          <div className="flex flex-col items-center gap-1">
+                            <span className={cn("inline-block h-2.5 w-2.5 rounded-full", DOT_COLORS[color])} />
+                            {labels[i] && <span className="text-[10px] text-green-400">{labels[i]}</span>}
+                          </div>
                         </TableCell>
                       ))}
                     </TableRow>
@@ -446,72 +606,92 @@ const Index = () => {
                 </TableBody>
               </Table>
             </div>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* ════════════════════════════════════════════════════════════════════
-          RESEARCH FOUNDATION
-      ════════════════════════════════════════════════════════════════════ */}
-      <section className="px-6 py-24 lg:py-32">
-        <div className="mx-auto max-w-4xl">
-          <Reveal>
-            <h2 className="text-center text-3xl font-bold text-foreground sm:text-4xl" style={{ textWrap: "balance" }}>
-              Built on peer-reviewed cryptography
-            </h2>
-          </Reveal>
-
-          <div className="mt-14 grid gap-6 md:grid-cols-2">
-            <Reveal delay={0}>
-              <Card className="h-full border-border/40 bg-card/50 backdrop-blur-sm">
-                <CardContent className="flex flex-col gap-3 p-7">
-                  <Badge variant="outline" className="w-fit border-primary/30 text-primary text-[10px]">Paper I</Badge>
-                  <h3 className="text-lg font-semibold text-foreground">Pramaana — PII-Anchored Lattice Commitment</h3>
-                  <p className="text-sm text-secondary">Vaishnavi Dasika, Columbia University (SEAS)</p>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    Closes the enrollment gap in ASC/U2SSO with post-quantum Kyber-1024
-                    lattice commitments. Formally proven under MLWE.
-                  </p>
-                </CardContent>
-              </Card>
-            </Reveal>
-            <Reveal delay={0.1}>
-              <Card className="h-full border-border/40 bg-card/50 backdrop-blur-sm">
-                <CardContent className="flex flex-col gap-3 p-7">
-                  <Badge variant="outline" className="w-fit border-primary/30 text-primary text-[10px]">Paper II</Badge>
-                  <h3 className="text-lg font-semibold text-foreground">Anonymous Self-Credentials (IACR 2025/618)</h3>
-                  <p className="text-sm text-secondary">Alupotha, Barbaraci, Kaklamanis, Rawat, Cachin, Zhang</p>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    Introduces ASC — user-centric credentials with Sybil resistance and
-                    multi-verifier unlinkability. No trusted identity provider needed.
-                  </p>
-                </CardContent>
-              </Card>
-            </Reveal>
-          </div>
-
-          <Reveal delay={0.2}>
-            <p className="mt-8 text-center text-sm text-muted-foreground">
-              Built for the Shape Rotator Virtual Hackathon — IC3 + FlashbotsX + Encode Club
+            <p className="mt-3 text-center text-[10px] text-muted-foreground/60">
+              <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1 align-middle" /> Safe
+              <span className="inline-block h-2 w-2 rounded-full bg-destructive ml-3 mr-1 align-middle" /> Vulnerable
+              <span className="inline-block h-2 w-2 rounded-full bg-amber-500 ml-3 mr-1 align-middle" /> Partial
             </p>
           </Reveal>
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          FOOTER
-      ════════════════════════════════════════════════════════════════════ */}
-      <footer className="border-t border-border/40 px-6 py-12">
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 9: TECH STACK (collapsed)
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <Reveal className="mx-auto max-w-3xl">
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="tech" className="border-[1px] border-white/[0.06] rounded-xl bg-card/50 backdrop-blur-sm px-6 overflow-hidden">
+              <AccordionTrigger className="text-sm font-semibold text-foreground hover:no-underline py-5">
+                Built with peer-reviewed cryptography
+              </AccordionTrigger>
+              <AccordionContent className="pb-6 space-y-5">
+                <div>
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-3">Cryptographic Stack</p>
+                  <div className="flex flex-wrap gap-2">
+                    {["ML-KEM-1024", "SHA3-512", "HKDF (RFC 5869)", "Schnorr / secp256k1", "Merkle proofs", "Ethereum Sepolia"].map((t) => (
+                      <Badge key={t} variant="outline" className="border-primary/20 text-[10px] font-mono text-muted-foreground">{t}</Badge>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Research Foundation</p>
+                  <div className="space-y-2">
+                    <div className="rounded-lg border border-border/30 bg-muted/10 p-3">
+                      <p className="text-xs font-medium text-foreground">Pramaana (Dasika, Columbia/SEAS)</p>
+                      <p className="text-[11px] text-muted-foreground">Post-quantum enrollment using Kyber-1024 lattice commitments</p>
+                    </div>
+                    <div className="rounded-lg border border-border/30 bg-muted/10 p-3">
+                      <p className="text-xs font-medium text-foreground">Anonymous Self-Credentials (Alupotha et al., IACR 2025/618)</p>
+                      <p className="text-[11px] text-muted-foreground">Sybil-resistant anonymous credentials without trusted identity providers</p>
+                    </div>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </Reveal>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          SECTION 10: FOOTER CTA
+      ══════════════════════════════════════════════════════════════════ */}
+      <section className="px-6 py-20 lg:py-28">
+        <Reveal className="mx-auto max-w-2xl">
+          <Card className="border-[1px] border-white/[0.06] bg-card/60 backdrop-blur-sm">
+            <CardContent className="flex flex-col items-center gap-6 p-10 text-center">
+              <h2 className="text-2xl font-bold text-foreground sm:text-3xl" style={{ textWrap: "balance" } as React.CSSProperties}>
+                One enrollment. Every service. Zero tracking.
+              </h2>
+              <div className="flex flex-col items-center gap-3 sm:flex-row">
+                <Button asChild size="lg" className="rounded-full px-8 active:scale-[0.97] transition-transform">
+                  <Link to="/enroll">
+                    Start Enrollment <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="lg" className="rounded-full px-8 border-border/60 active:scale-[0.97] transition-transform">
+                  <Link to="/about">Read the Paper</Link>
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground/50">
+                Built for Shape Rotator Hackathon 2026 · IC3 + FlashbotsX + Encode Club
+              </p>
+            </CardContent>
+          </Card>
+        </Reveal>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-border/30 px-6 py-12">
         <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 sm:flex-row sm:justify-between">
           <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground">
             <Link to="/enroll" className="transition-colors hover:text-foreground">Enrollment</Link>
-            <Link to="/verify" className="transition-colors hover:text-foreground">Verification</Link>
+            <Link to="/register-service" className="transition-colors hover:text-foreground">Register</Link>
+            <Link to="/verify" className="transition-colors hover:text-foreground">Verify</Link>
             <Link to="/dashboard" className="transition-colors hover:text-foreground">Dashboard</Link>
             <Link to="/about" className="transition-colors hover:text-foreground">About</Link>
           </div>
-          <p className="text-xs text-muted-foreground/70">
-            Quantum-safe identity for the post-quantum world.
-          </p>
+          <p className="text-xs text-muted-foreground/50">Quantum-safe identity for the post-quantum world.</p>
         </div>
       </footer>
     </div>
