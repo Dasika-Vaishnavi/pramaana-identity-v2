@@ -9,6 +9,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
   BookOpen,
   Cpu,
   ExternalLink,
@@ -21,7 +24,14 @@ import {
   EyeOff,
   Trash2,
   Atom,
+  TreeDeciduous,
+  Zap,
+  Rocket,
+  Sparkles,
+  Check,
+  Circle,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const PAPERS = [
   {
@@ -119,6 +129,109 @@ const SECURITY_PROPERTIES = [
   },
 ];
 
+const ROADMAP_PHASES = [
+  {
+    phase: 1,
+    label: "Hackathon Demo",
+    status: "LIVE",
+    statusColor: "bg-green-500 text-white",
+    icon: TreeDeciduous,
+    iconColor: "text-green-500",
+    title: "Merkle membership proof with nullifier binding",
+    bullets: [
+      "Pramaana PALC enrollment (post-quantum via Kyber-1024)",
+      "SHA256 Merkle tree for anonymity set",
+      "Nullifier derived from H(sk ‖ service_name)",
+      "Merkle path proves membership",
+    ],
+  },
+  {
+    phase: 2,
+    label: "Post-Hackathon",
+    status: "DESIGNED",
+    statusColor: "bg-amber-500 text-white",
+    icon: Zap,
+    iconColor: "text-amber-500",
+    title: "Semaphore Groth16 integration",
+    bullets: [
+      "Same Pramaana enrollment",
+      "Replace Merkle proof with Groth16 ZK-SNARK via Semaphore circuit",
+      "Full zero-knowledge: verifier learns NOTHING except the nullifier",
+      "Proof size: constant 128 bytes",
+      "Verification: on-chain via Groth16 Verifier contract",
+    ],
+    note: "Matches ASC paper SRS-U2SSO implementation",
+  },
+  {
+    phase: 3,
+    label: "Future",
+    status: "RESEARCH",
+    statusColor: "bg-purple-500 text-white",
+    icon: Rocket,
+    iconColor: "text-purple-500",
+    title: "Post-quantum ZK proofs",
+    bullets: [
+      "Replace Groth16 (BN254) with lattice-based ZK (LaBRADOR or Aurora)",
+      "OR use hash-based STARKs for the membership proof",
+      "Full end-to-end post-quantum: enrollment (Kyber) + proof (lattice ZK)",
+    ],
+    note: "Pramaana paper Section 7.2",
+  },
+  {
+    phase: 4,
+    label: "Vision",
+    status: "CONCEPTUAL",
+    statusColor: "bg-muted text-muted-foreground",
+    icon: Sparkles,
+    iconColor: "text-muted-foreground",
+    title: "BIP-360 + PQ-ZK + Pramaana",
+    bullets: [
+      "Bitcoin P2MR addresses with Dilithium signatures",
+      "On-chain ZK verification via PQ-STARKs",
+      "Pramaana identity as the universal PQ anchor across all chains",
+    ],
+  },
+];
+
+const COMPARISON_TABLE = [
+  {
+    property: "What it proves",
+    enrollment: '"I\'m a unique real person"',
+    proof: '"I\'m in the anonymity set"',
+    combined: "Both",
+  },
+  {
+    property: "What it hides",
+    enrollment: "PII (consumed & erased)",
+    proof: "Which identity is mine",
+    combined: "Everything",
+  },
+  {
+    property: "Quantum safety",
+    enrollment: "YES (Kyber-1024, FIPS 203)",
+    proof: "NO (BN254 classical curves)",
+    combined: "Enrollment: YES, Proof: NO (upgrade path exists)",
+  },
+  {
+    property: "Sybil resistance",
+    enrollment: "PII determinism",
+    proof: "Nullifier determinism",
+    combined: "Double-layered",
+  },
+  {
+    property: "On-chain footprint",
+    enrollment: "H(C) = 64 bytes",
+    proof: "128 bytes (Groth16)",
+    combined: "192 bytes total",
+  },
+  {
+    property: "Trust assumption",
+    enrollment: "SHA3-512 collision resistance",
+    proof: "Trusted setup (Groth16) or none (Bulletproofs)",
+    combined: "Combined",
+  },
+];
+
 const About = () => {
   return (
     <div className="mx-auto max-w-4xl px-6 py-16 space-y-14">
@@ -174,7 +287,101 @@ const About = () => {
         </CardContent>
       </Card>
 
-      {/* How It Works */}
+      {/* ═══ ZK Proof Integration Roadmap ═══ */}
+      <Card className="border-border/50 bg-card/80 backdrop-blur overflow-hidden">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2.5 text-lg">
+            <TreeDeciduous className="h-5 w-5 text-primary" />
+            ZK Proof Integration Roadmap
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            From Merkle proofs to full post-quantum zero-knowledge
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-8">
+          {/* Horizontal timeline */}
+          <div className="relative">
+            {/* Connector line */}
+            <div className="absolute top-5 left-5 right-5 h-0.5 bg-border/40 hidden md:block" />
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 md:gap-4">
+              {ROADMAP_PHASES.map((p, i) => (
+                <div key={p.phase} className="relative flex flex-col items-center text-center">
+                  {/* Node */}
+                  <div className={cn(
+                    "relative z-10 flex h-10 w-10 items-center justify-center rounded-full border-2 transition-all",
+                    i === 0
+                      ? "border-green-500 bg-green-500/10 shadow-[0_0_16px_rgba(34,197,94,0.2)]"
+                      : "border-border/60 bg-card"
+                  )}>
+                    <p.icon className={cn("h-4 w-4", p.iconColor)} />
+                  </div>
+
+                  {/* Phase label */}
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Phase {p.phase}</p>
+                    <Badge className={cn("text-[10px] px-2 py-0.5", p.statusColor)}>{p.status}</Badge>
+                  </div>
+
+                  {/* Content card */}
+                  <div className={cn(
+                    "mt-3 w-full rounded-lg border p-3 text-left space-y-2",
+                    i === 0 ? "border-green-500/30 bg-green-500/5" : "border-border/40 bg-muted/10"
+                  )}>
+                    <p className="text-xs font-semibold text-foreground leading-snug">{p.title}</p>
+                    <ul className="space-y-1">
+                      {p.bullets.map((b, bi) => (
+                        <li key={bi} className="flex items-start gap-1.5 text-[10px] text-muted-foreground leading-relaxed">
+                          {i === 0 ? (
+                            <Check className="h-3 w-3 shrink-0 mt-0.5 text-green-500" />
+                          ) : (
+                            <Circle className="h-2 w-2 shrink-0 mt-1 text-muted-foreground/40" />
+                          )}
+                          {b}
+                        </li>
+                      ))}
+                    </ul>
+                    {p.note && (
+                      <p className="text-[9px] italic text-muted-foreground/70 pt-1 border-t border-border/30">{p.note}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Separator className="bg-border/20" />
+
+          {/* Comparison table */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">Enrollment × Proof Comparison</h3>
+            <div className="overflow-x-auto rounded-lg border border-border/40">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="text-[10px] uppercase tracking-wider w-[160px]">Property</TableHead>
+                    <TableHead className="text-[10px] uppercase tracking-wider">Pramaana (enrollment)</TableHead>
+                    <TableHead className="text-[10px] uppercase tracking-wider">ZK-SNARK (proof)</TableHead>
+                    <TableHead className="text-[10px] uppercase tracking-wider">Combined</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {COMPARISON_TABLE.map((row) => (
+                    <TableRow key={row.property}>
+                      <TableCell className="text-xs font-medium text-foreground">{row.property}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{row.enrollment}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{row.proof}</TableCell>
+                      <TableCell className="text-xs text-foreground font-medium">{row.combined}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Security Properties */}
       <Card className="border-border/50 bg-card/80 backdrop-blur">
         <CardHeader>
           <CardTitle className="flex items-center gap-2.5 text-lg">
