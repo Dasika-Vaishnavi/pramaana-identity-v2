@@ -1,116 +1,116 @@
 /**
- * PramaanaClient — thin HTTP client that talks to the V3 app server's JSON API.
+ * PramaanaClient — the SINGLE client layer for talking to the V3 app server.
  *
- * This replaces all Supabase Edge Function calls from V2. The V3 backend
- * (tee-server + voprf-vault + anvil) runs locally and exposes a REST API
- * via the app/ server at http://127.0.0.1:8080.
+ * The V3 backend (tee-server + voprf-vault + anvil, fronted by app/src/server.ts)
+ * runs locally and exposes a small JSON API at http://127.0.0.1:8080. This client
+ * is the one and only place that issues HTTP to it; the Supabase compatibility
+ * shim (web/src/integrations/supabase/client.ts) delegates here and never does its
+ * own fetch.
  *
- * Crypto-spine safety: this client is a pure transport layer. All cryptographic
- * operations (PALC, VOPRF, TEE gates, Semaphore) run server-side in Rust.
- * This client sends user intents and receives results — it never touches
- * secret key material or PII.
+ * The method surface is aligned 1:1 with the routes that ACTUALLY exist in
+ * app/src/server.ts:
+ *
+ *   POST /api/enroll              → enroll()
+ *   POST /api/claim               → claim()
+ *   GET  /api/worldid/challenge   → worldIdChallenge()
+ *   GET  /api/state               → getState()
+ *   POST /api/reset               → reset()
+ *
+ * Reads are GET, writes are POST. (The old shim POSTed to everything, which 404'd
+ * the GET-only /api/state route.) There is intentionally NO fixture() method —
+ * the server has no /api/fixture endpoint; the demo server pulls its own fixture
+ * server-side inside /api/enroll.
+ *
+ * Crypto-spine safety: this is a pure transport layer. All cryptographic
+ * operations (PALC, VOPRF, TEE gates, Semaphore) run server-side in Rust. This
+ * client sends user intents and receives results — it never touches secret key
+ * material or PII.
  */
 
+/** Response of POST /api/enroll (see app/src/server.ts handleEnroll). */
 export interface EnrollResult {
   phi: string;
-  dedupTag: string;
-  enrolled: boolean;
+  phiShort: string;
   alreadyEnrolled: boolean;
 }
 
+/** Response of POST /api/claim (see app/src/server.ts handleClaim). */
 export interface ClaimResult {
+  status: "claimed" | "blocked";
   nullifier: string;
-  txHash: string;
-  spent: boolean;
-  blocked: boolean;
-  blockReason?: string;
+  scope: string;
+  worldIdMode?: "live" | "stub";
 }
 
-export interface ProveResult {
-  nullifier: string;
-  proof: {
-    merkleTreeDepth: number;
-    merkleTreeRoot: string;
-    nullifier: string;
-    message: string;
-    scope: string;
-    points: string[];
-  };
-  verified: boolean;
-}
-
+/** Response of GET /api/state (see app/src/server.ts state). */
 export interface AppState {
-  enrolled: boolean;
-  phi: string | null;
-  claims: Record<string, { nullifier: string; txHash: string }>;
+  services: string[];
+  worldId: { mode: string; action: string };
+  enrollment: { phi: string; phiShort: string; alreadyEnrolled: boolean } | null;
+  claims: Record<string, ClaimResult>;
 }
 
-export interface FixtureData {
-  qrNumeric: string;
-  frames: Array<{ r: number; g: number; b: number }>;
-}
+/** A World ID proof-of-human payload, as forwarded to /api/claim. */
+export type WorldIdProof = Record<string, unknown>;
 
 export class PramaanaClient {
   private baseUrl: string;
 
-  constructor(baseUrl: string = 'http://127.0.0.1:8080') {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+  constructor(baseUrl: string = "http://127.0.0.1:8080") {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  private async get<T>(path: string): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`);
+    if (!res.ok) throw new Error(`${path} failed: ${res.status} ${await res.text()}`);
+    return res.json() as Promise<T>;
+  }
+
+  private async post<T>(path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(`${path} failed: ${res.status} ${await res.text()}`);
+    return res.json() as Promise<T>;
   }
 
   /**
-   * Get a sim-mode fixture (synthetic Aadhaar QR + matching face frames).
-   * Only available when the backend runs with --features sim-fixture.
+   * Enroll a new identity via the V3 TEE backend. Drives the full §2 enrollment
+   * sequence: Gate 0 → UIDAI verify → face match → VOPRF → PALC → dedup → Gate Z
+   * → erase. The server uses its own sim fixture (QR + face frames); there is no
+   * body to send.
    */
-  async fixture(): Promise<FixtureData> {
-    const res = await fetch(`${this.baseUrl}/api/fixture`);
-    if (!res.ok) throw new Error(`fixture failed: ${res.status} ${await res.text()}`);
-    return res.json();
-  }
-
-  /**
-   * Enroll a new identity via the V3 TEE backend.
-   * Drives the full §2 enrollment sequence: Gate 0 → UIDAI verify → face match →
-   * VOPRF → PALC → dedup → Gate Z → erase.
-   */
-  async enroll(): Promise<EnrollResult> {
-    const res = await fetch(`${this.baseUrl}/api/enroll`, { method: 'POST' });
-    if (!res.ok) throw new Error(`enroll failed: ${res.status} ${await res.text()}`);
-    return res.json();
+  enroll(): Promise<EnrollResult> {
+    return this.post<EnrollResult>("/api/enroll");
   }
 
   /**
    * Prove membership for a service and claim (spend the nullifier on-chain).
-   * Drives §3: Semaphore proof generation + NullifierRegistry.spend().
+   * Drives §3: World ID gate → Semaphore proof → NullifierRegistry.spend().
    */
-  async claim(serviceId: string): Promise<ClaimResult> {
-    const res = await fetch(`${this.baseUrl}/api/claim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serviceId }),
-    });
-    if (!res.ok) throw new Error(`claim failed: ${res.status} ${await res.text()}`);
-    return res.json();
+  claim(serviceId: string, worldIdProof?: WorldIdProof): Promise<ClaimResult> {
+    return this.post<ClaimResult>("/api/claim", { service: serviceId, worldIdProof });
   }
 
-  /**
-   * Get the current application state (enrollment status, past claims).
-   */
-  async getState(): Promise<AppState> {
-    const res = await fetch(`${this.baseUrl}/api/state`);
-    if (!res.ok) throw new Error(`getState failed: ${res.status} ${await res.text()}`);
-    return res.json();
+  /** Get the current application state (enrollment status, past claims). */
+  getState(): Promise<AppState> {
+    return this.get<AppState>("/api/state");
   }
 
-  /**
-   * Reset the session (for demo purposes).
-   */
+  /** Fetch a World ID challenge for a given service action. */
+  worldIdChallenge(service: string): Promise<unknown> {
+    return this.get(`/api/worldid/challenge?service=${encodeURIComponent(service)}`);
+  }
+
+  /** Reset the session (re-enroll a fresh "human"; for demo purposes). */
   async reset(): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/reset`, { method: 'POST' });
-    if (!res.ok) throw new Error(`reset failed: ${res.status} ${await res.text()}`);
+    await this.post("/api/reset");
   }
 }
 
-/** Singleton instance for use across the app */
+/** Singleton instance — the one client layer used across the app. */
 export const pramaana = new PramaanaClient(
-  import.meta.env.VITE_PRAMAANA_API_URL || 'http://127.0.0.1:8080'
+  import.meta.env.VITE_PRAMAANA_API_URL || "http://127.0.0.1:8080",
 );

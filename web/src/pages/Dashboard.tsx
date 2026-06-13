@@ -452,22 +452,11 @@ function SecurityDemo() {
     setSybilState("loading");
     const pii_input = `${DEMO_PII.govId}|${DEMO_PII.dob}|${DEMO_PII.jurisdiction}|${DEMO_PII.biometric}`;
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/palc-enroll`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({ pii_input }),
-        }
-      );
-      const data = await res.json();
-      if (res.status === 409 || data?.sybil_resistant) {
+      // Route through the single unified client (the supabase shim → PramaanaClient).
+      const { data, error } = await supabase.functions.invoke("palc-enroll", { body: { pii_input } });
+      if (data?.sybil_resistant || data?.error) {
         setSybilState("rejected");
-      } else if (res.ok) {
+      } else if (data && !error) {
         setSybilState("enrolled");
       } else {
         setSybilState("idle");

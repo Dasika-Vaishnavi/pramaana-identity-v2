@@ -88,18 +88,11 @@ const networkNames: Record<number, string> = { 1: "Ethereum Mainnet", 11155111: 
 const ease = [0.16, 1, 0.3, 1] as [number, number, number, number];
 const fade = { initial: { opacity: 0, y: 14, filter: "blur(4px)" }, animate: { opacity: 1, y: 0, filter: "blur(0px)" }, transition: { duration: 0.5, ease } };
 
+// Route through the single unified client (the supabase shim → PramaanaClient),
+// not a raw fetch to the legacy Supabase URL.
 const invokeFn = async (fnName: string, body: Record<string, unknown>) => {
-  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fnName}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  return { data, ok: res.ok };
+  const { data, error } = await supabase.functions.invoke(fnName, { body });
+  return { data, ok: !error };
 };
 
 const riskBadge = (level: string) => {
@@ -361,23 +354,13 @@ function TransactionAnalyzerTab({ chainId }: { chainId: number }) {
     if (!h || !h.startsWith("0x") || h.length !== 66) { setError("Enter a valid 66-char tx hash"); return; }
     setError(""); setLoading(true); setResult(null);
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-transaction`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-        },
-        body: JSON.stringify({ tx_hash: h, chain_id: chainId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || `Request failed (${res.status})`);
+      const { data, ok } = await invokeFn("analyze-transaction", { tx_hash: h, chain_id: chainId });
+      if (!ok) {
+        setError(data?.error || "Request failed");
       } else if (data.found === false) {
         setError(data.error || "Transaction not found on this chain");
       } else if (data.error) {
-        setError(data.error || `Request failed (${res.status})`);
+        setError(data.error || "Request failed");
       } else {
         setResult(data);
       }
