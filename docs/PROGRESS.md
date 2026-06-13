@@ -20,7 +20,7 @@ V2's React frontend (see `docs/UNIFICATION.md` for reconciliation details).
 | 11 | `@pramaana/semaphore` | V3 | ✅ Real | 13 vitest | Groth16/BN254, Semaphore v4. Unlinkability tested. |
 | 12 | `@pramaana/sdk` | V3 | ✅ Real | 11 vitest | enroll/prove/verifyOnChain/claim. Gate 0 client-side. |
 | 13 | `@pramaana/app` | V3 | ✅ Real | 3 vitest | Sybil-resistant airdrop demo (headless + interactive). |
-| 14 | `@pramaana/web` | V2→unified | ✅ Real | 1 vitest | 14 React pages, Shadcn/UI, Tailwind, Framer Motion. Rewired to V3. |
+| 14 | `@pramaana/web` | V2→unified | 🚧 Renders; wiring in progress | 1 vitest | 14 React pages, Shadcn/UI, Tailwind, Framer Motion. Renders, but backend wiring is incomplete — see [WIRING_MAP.md](docs/WIRING_MAP.md) (missing `supabase.from()`, ~12 fns routed to `/api/state`, `/api/enroll` ignores QR+liveness). |
 | 15 | `circuits` | V3 | ❌ Stub | 0 | Gate Z (DCAP-in-ZK) — post-hackathon. |
 
 ## Test Summary
@@ -56,4 +56,4 @@ V2's React frontend (see `docs/UNIFICATION.md` for reconciliation details).
 - [ ] Real UIDAI certificate fixture for aadhaar-qr validation
 - [ ] ONNX face matcher model provisioning
 - [ ] ETHGlobal bounty integrations (see `docs/BOUNTIES.md`)
-- [ ] V2 frontend pages fully wired to V3 backend (Supabase shim → direct SDK calls)
+- [ ] V2 frontend pages fully wired to V3 backend (Supabase shim → direct SDK calls) — per-page status & gaps tracked in [WIRING_MAP.md](docs/WIRING_MAP.md)
