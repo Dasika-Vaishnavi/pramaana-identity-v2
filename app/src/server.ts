@@ -11,7 +11,15 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pramaana, type ServiceProof } from "@pramaana/sdk";
-import { ContractFactory, JsonRpcProvider, Wallet } from "ethers";
+import {
+  ContractFactory,
+  JsonRpcProvider,
+  Wallet,
+  keccak256,
+  solidityPackedKeccak256,
+  type BaseContract,
+  type InterfaceAbi,
+} from "ethers";
 import {
   buildChallenge,
   loadWorldIdConfig,
@@ -60,11 +68,37 @@ function nullifierHex(proof: ServiceProof): string {
   return `0x${proof.nullifier.toString(16).padStart(64, "0")}`;
 }
 
+/** The demo http.Server, augmented with the on-chain Registry (R) address so
+ *  tests can read its state without an HTTP surface change. */
+export interface DemoServer extends Server {
+  registryAddress: string;
+}
+
+/**
+ * Φ64 → bytes32 for Registry.sol (docs/DECISIONS.md). The Rust Φ is 64 bytes
+ * (SHA3-512 of C_commit); the on-chain Registry keys identities by bytes32.
+ * The mapping is keccak256(Φ64) — a hash, not a truncation, so the full Φ binds
+ * the on-chain key. `phiHex` is the SDK's 128-hex-char Φ (with or without 0x).
+ */
+export function phi64ToBytes32(phiHex: string): string {
+  return keccak256(phiHex.startsWith("0x") ? phiHex : `0x${phiHex}`);
+}
+
+/**
+ * The EVM-sim Gate Z proof GateZVerifier.sol accepts for `phi32`:
+ * keccak256(abi.encodePacked("pramaana-sim-attestation", phi32)). It must
+ * byte-match GateZVerifier.expectedProof or register() reverts InvalidGateZProof.
+ * SIM stand-in only; production swaps in a DCAP-in-ZK verifier (docs/DECISIONS.md).
+ */
+export function simGateZProof(phi32: string): string {
+  return solidityPackedKeccak256(["string", "bytes32"], ["pramaana-sim-attestation", phi32]);
+}
+
 /**
  * Deploys a fresh NullifierRegistry to the chain, then returns an http.Server
  * exposing the demo API + UI. One server = one demo "human".
  */
-export async function createDemoServer(config: DemoServerConfig): Promise<Server> {
+export async function createDemoServer(config: DemoServerConfig): Promise<DemoServer> {
   const wallet = new Wallet(
     config.deployerKey ?? ANVIL_KEY0,
     new JsonRpcProvider(config.rpcUrl, undefined, {
@@ -74,19 +108,27 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
       cacheTimeout: -1,
     }),
   );
-  const artifact = JSON.parse(
-    readFileSync(
-      join(REPO_ROOT, "contracts", "out", "NullifierRegistry.sol", "NullifierRegistry.json"),
-      "utf8",
-    ),
-  );
-  const registry = await new ContractFactory(
-    artifact.abi,
-    artifact.bytecode.object,
-    wallet,
-  ).deploy();
-  await registry.waitForDeployment();
+  const loadArtifact = (name: string): { abi: InterfaceAbi; bytecode: { object: string } } =>
+    JSON.parse(
+      readFileSync(join(REPO_ROOT, "contracts", "out", `${name}.sol`, `${name}.json`), "utf8"),
+    );
+  const deploy = async (name: string, args: unknown[] = []): Promise<BaseContract> => {
+    const a = loadArtifact(name);
+    const c = await new ContractFactory(a.abi, a.bytecode.object, wallet).deploy(...args);
+    await c.waitForDeployment();
+    return c;
+  };
+
+  const registry = await deploy("NullifierRegistry");
   const nullifierRegistryAddress = await registry.getAddress();
+
+  // On-chain Registry R (§2 steps 11–12): the Gate Z verifier first, then the
+  // Registry which takes the verifier's address. The SIM GateZVerifier accepts
+  // the deterministic mock proof (simGateZProof); production swaps the verifier.
+  const gateZ = await deploy("GateZVerifier");
+  const registryR = await deploy("Registry", [await gateZ.getAddress()]);
+  const registryAddress = await registryR.getAddress();
+  console.log(`  Registry (Φ) deployed → ${registryAddress}`);
 
   const worldId = config.worldId ?? loadWorldIdConfig();
 
@@ -113,6 +155,15 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
     const startedAt = performance.now();
     const handle = await pramaana.enroll(qrNumeric, { frames, capturedAtMs: Date.now() });
     const totalMs = Math.round(performance.now() - startedAt);
+
+    // §2 step 12: record the Φ commitment on-chain (Gate Z–gated). Only a
+    // genuinely new identity registers — a dedup hit (alreadyEnrolled) must NOT
+    // re-register (the contract would revert DuplicatePhi/AlreadyEnrolled). The
+    // tx fields + set_index are surfaced in Commit 3; this is plumbing only.
+    if (!handle.alreadyEnrolled) {
+      await registerOnChain(handle.phi, handle.dedupTag);
+    }
+
     enrollment = { phi: handle.phi, alreadyEnrolled: handle.alreadyEnrolled };
     return {
       phi: handle.phi,
@@ -120,6 +171,32 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
       alreadyEnrolled: handle.alreadyEnrolled,
       timing: { total_ms: totalMs },
     };
+  }
+
+  /** Register Φ on R with the SIM Gate Z proof. A Φ/dedup already recorded
+   *  on-chain is treated as "already registered" (benign) rather than crashing
+   *  the enroll; any other revert is a real failure and propagates. */
+  async function registerOnChain(phiHex: string, dedupHex: string): Promise<void> {
+    const phi32 = phi64ToBytes32(phiHex);
+    const dedupTag = dedupHex.startsWith("0x") ? dedupHex : `0x${dedupHex}`;
+    try {
+      const tx = await (registryR as BaseContract & { register: (...a: unknown[]) => Promise<{ wait: () => Promise<unknown> }> }).register(
+        phi32,
+        dedupTag,
+        simGateZProof(phi32),
+      );
+      await tx.wait();
+    } catch (e) {
+      const name = (e as { revert?: { name?: string } }).revert?.name ?? "";
+      if (
+        name === "DuplicatePhi" ||
+        name === "AlreadyEnrolled" ||
+        /DuplicatePhi|AlreadyEnrolled/.test(String((e as Error).message))
+      ) {
+        return;
+      }
+      throw e;
+    }
   }
 
   async function handleClaim(service: ServiceId, worldIdProof?: WorldIdProof): Promise<unknown> {
@@ -189,7 +266,7 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
     };
   }
 
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     route(req, res, {
       "POST /api/enroll": handleEnroll,
       "POST /api/claim": async (body) =>
@@ -203,7 +280,9 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
         return { ok: true };
       },
     });
-  });
+  }) as DemoServer;
+  server.registryAddress = registryAddress;
+  return server;
 }
 
 // ---------------------------------------------------------------------------

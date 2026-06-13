@@ -374,3 +374,41 @@ checkout and assert the headline properties (DoD).
 end-to-end in sim. The demo deploys only NullifierRegistry (what the SDK
 drives); Registry.sol on-chain Φ registration remains the next integration
 (Φ64→bytes32 mapping still open), called out honestly in PITCH.md.
+
+## 2026-06-13 — W2: on-chain Registry wiring (Φ64→bytes32, EVM-sim Gate Z, set_index)
+
+**Context.** The web W2 work needs a real on-chain registration order for
+`set_index`. Until now the demo deployed only NullifierRegistry; Φ registration
+lived in the Rust `InMemoryRegistry`, which emits no events and exposes no
+ordering. The Φ64→bytes32 mapping and the EVM-sim Gate Z proof format were the
+two open items blocking this.
+
+**Decision.**
+1. **Φ64 → bytes32** = `keccak256(Φ64)`. The Rust Φ is 64 bytes (SHA3-512 of
+   C_commit); Registry.sol keys identities by `bytes32`. We hash (not truncate)
+   so the full 64-byte Φ binds the on-chain key. The per-person `dedupTag` is
+   already 32 bytes (SHA3-256, §2 step 11) and is used on-chain verbatim. Impl:
+   `phi64ToBytes32()` in `app/src/server.ts`.
+2. **EVM-sim Gate Z proof** = `keccak256(abi.encodePacked("pramaana-sim-attestation", phi32))`,
+   matching `GateZVerifier.expectedProof`. This is the EVM SIM stand-in — a
+   self-contained mock distinct from the Rust enrollment-tee's attestation-crate
+   sim quote; both are sim stand-ins for their own layer. Production swaps in a
+   DCAP-in-ZK verifier behind the same `IGateZVerifier`. Impl: `simGateZProof()`.
+3. **`createDemoServer`** now also deploys `GateZVerifier` then `Registry`
+   (constructor takes the verifier address) and logs the Registry address on
+   boot. `handleEnroll` calls `Registry.register(phi32, dedupTag, gateZProof)`
+   only when the enroll was NOT a dedup hit (`alreadyEnrolled === false`); a
+   `DuplicatePhi`/`AlreadyEnrolled` revert is treated as benign (already
+   registered), never crashing the enroll path.
+4. **`set_index` = 0-based ordinal** of the `Registered` event stream — i.e.
+   `identityCount - 1` immediately after a new registration; for an
+   `alreadyEnrolled` identity the prior ordinal is recovered from the
+   `Registered` stream. `set_id` is fixed at `1` (single global anonymity set in
+   this demo). NOTE: this convention is fixed here; the response fields that
+   surface `set_id`/`set_index` (and `tx_hash`/`block_number`) land in Commit 3.
+
+**Consequences.** Φ registration is now exercised on-chain by the demo and the
+app e2e — `registry.identityCount()` reflects real registrations and a duplicate
+Φ reverts. The enroll HTTP response shape is unchanged in this commit (plumbing
+only). `explorer_url` will be `null` on local anvil (built only from a configured
+explorer base, never a fabricated string).
