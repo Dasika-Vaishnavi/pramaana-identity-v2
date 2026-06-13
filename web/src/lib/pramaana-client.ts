@@ -32,6 +32,8 @@ export interface EnrollResult {
   phi: string;
   phiShort: string;
   alreadyEnrolled: boolean;
+  /** Real server-measured enrollment wall-clock; no per-phase breakdown (Decision 1). */
+  timing: { total_ms: number };
 }
 
 /** Response of POST /api/claim (see app/src/server.ts handleClaim). */

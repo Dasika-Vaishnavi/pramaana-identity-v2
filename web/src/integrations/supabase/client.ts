@@ -58,9 +58,7 @@ function randomHex(bytes: number): string {
  */
 async function invokePalcEnroll(): Promise<InvokeResult> {
   try {
-    const t0 = performance.now();
     const r = await pramaana.enroll();
-    const elapsed = Math.round(performance.now() - t0);
     return {
       data: {
         phi_hash: r.phi,
@@ -78,7 +76,8 @@ async function invokePalcEnroll(): Promise<InvokeResult> {
         // The backend never returns sk material; recomputable by re-scan only.
         master_secret_key_local_only: "",
         pii_retained: false,
-        timing: { total_ms: elapsed, hash_ms: 0, hkdf_ms: 0, keygen_ms: 0, encrypt_ms: 0 },
+        // Real server-measured total only (Decision 1); per-phase fields removed.
+        timing: { total_ms: r.timing.total_ms },
         palc_properties: { hiding: "", binding: "", uniqueness: "", one_wayness: "" },
         error: r.alreadyEnrolled ? "Sybil collision: identity already enrolled" : undefined,
       },

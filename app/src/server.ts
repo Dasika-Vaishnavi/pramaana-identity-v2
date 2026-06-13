@@ -107,9 +107,19 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
 
   async function handleEnroll(): Promise<unknown> {
     const { qrNumeric, frames } = await pramaana.fixture();
+    // Decision 1 (W2): real server-measured total enrollment wall-clock. We can
+    // only see the total here — the §2 phases run inside the Rust TEE behind one
+    // HTTP round-trip — so there are deliberately no per-phase fields.
+    const startedAt = performance.now();
     const handle = await pramaana.enroll(qrNumeric, { frames, capturedAtMs: Date.now() });
+    const totalMs = Math.round(performance.now() - startedAt);
     enrollment = { phi: handle.phi, alreadyEnrolled: handle.alreadyEnrolled };
-    return { phi: handle.phi, phiShort: shortHash(handle.phi), alreadyEnrolled: handle.alreadyEnrolled };
+    return {
+      phi: handle.phi,
+      phiShort: shortHash(handle.phi),
+      alreadyEnrolled: handle.alreadyEnrolled,
+      timing: { total_ms: totalMs },
+    };
   }
 
   async function handleClaim(service: ServiceId, worldIdProof?: WorldIdProof): Promise<unknown> {
