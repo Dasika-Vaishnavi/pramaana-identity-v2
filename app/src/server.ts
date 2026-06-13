@@ -5,12 +5,20 @@
  * tee-server, and skips an in-browser Groth16 artifact download.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pramaana, type ServiceProof } from "@pramaana/sdk";
 import { ContractFactory, JsonRpcProvider, Wallet } from "ethers";
+import {
+  buildChallenge,
+  loadWorldIdConfig,
+  verifyProofOfHuman,
+  type WorldIdConfig,
+  type WorldIdProof,
+} from "./worldid.js";
 
 /** The demo's two independent "services" — distinct external nullifiers. */
 export const SERVICES = ["airdrop-alpha", "airdrop-beta"] as const;
@@ -27,12 +35,25 @@ export interface DemoServerConfig {
   teeUrl: string;
   rpcUrl: string;
   deployerKey?: string;
+  /** World ID config override (defaults to env via loadWorldIdConfig). */
+  worldId?: WorldIdConfig;
+}
+
+/** World ID nullifier is scoped per (app_id, action). To keep the two airdrops
+ *  cross-service-unlinkable on the World side too, each service gets its own
+ *  action namespace; the same human therefore presents a DIFFERENT World
+ *  nullifier per airdrop, while a second human reusing one within an airdrop is
+ *  caught. */
+function serviceAction(cfg: WorldIdConfig, service: ServiceId): WorldIdConfig {
+  return { ...cfg, action: `${cfg.action}:${service}` };
 }
 
 interface ClaimRecord {
   status: "claimed" | "blocked";
   nullifier: string;
   scope: string;
+  /** Which World ID verification path gated this claim. */
+  worldIdMode?: "live" | "stub";
 }
 
 function nullifierHex(proof: ServiceProof): string {
@@ -67,6 +88,14 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
   await registry.waitForDeployment();
   const nullifierRegistryAddress = await registry.getAddress();
 
+  const worldId = config.worldId ?? loadWorldIdConfig();
+
+  // World ID ledger: keyed `${service}:${worldNullifier}`. This models a global
+  // on-chain ledger, so it deliberately PERSISTS across /api/reset — a second
+  // "human" (fresh Pramaana Φ) cannot reuse a World ID nullifier they already
+  // spent on an airdrop. Value = phiShort that first used it (for messaging).
+  const worldNullifierLedger = new Map<string, string>();
+
   // Mutable demo session (reset re-enrolls a "fresh human").
   let pramaana = newSession();
   let enrollment: { phi: string; alreadyEnrolled: boolean } | null = null;
@@ -83,8 +112,26 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
     return { phi: handle.phi, phiShort: shortHash(handle.phi), alreadyEnrolled: handle.alreadyEnrolled };
   }
 
-  async function handleClaim(service: ServiceId): Promise<unknown> {
+  async function handleClaim(service: ServiceId, worldIdProof?: WorldIdProof): Promise<unknown> {
     if (!enrollment) throw new HttpError(400, "enroll first");
+
+    // GATE: World ID proof-of-human is REQUIRED before any Semaphore work. The
+    // claim path BREAKS (403) without a valid, backend-verified proof — proving
+    // the personhood layer is load-bearing, not decorative. Verification happens
+    // here in the backend (World's requirement), never client-side.
+    const cfg = serviceAction(worldId, service);
+    const verdict = await verifyProofOfHuman(worldIdProof, cfg, service);
+    if (!verdict.ok) {
+      throw new HttpError(403, `World ID proof-of-human required: ${verdict.reason}`);
+    }
+    const ledgerKey = `${service}:${verdict.nullifierHash}`;
+    const priorUser = worldNullifierLedger.get(ledgerKey);
+    if (priorUser && priorUser !== shortHash(enrollment.phi)) {
+      // Same human (same World nullifier) already claimed this airdrop under a
+      // DIFFERENT Pramaana identity → blocked by the complementary World layer.
+      throw new HttpError(403, "World ID already used for this airdrop by another identity");
+    }
+
     const proof = await pramaana.prove(service);
     const record: ClaimRecord = {
       status: "claimed",
@@ -105,13 +152,28 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
         }
       }
     }
+    // Record first use of this World ID nullifier for this airdrop. Done after
+    // a passing proof so the complementary layer can later catch a different
+    // identity reusing the same human's World ID.
+    if (!priorUser) worldNullifierLedger.set(ledgerKey, shortHash(enrollment.phi));
+    record.worldIdMode = worldId.mode;
     claims.set(service, record);
     return record;
+  }
+
+  async function handleChallenge(req: IncomingMessage): Promise<unknown> {
+    const service = new URL(req.url ?? "", "http://x").searchParams.get("service");
+    if (!SERVICES.includes(service as ServiceId)) {
+      throw new HttpError(400, `unknown service ${String(service)}`);
+    }
+    const cfg = serviceAction(worldId, service as ServiceId);
+    return buildChallenge(cfg, randomUUID());
   }
 
   function state(): unknown {
     return {
       services: SERVICES,
+      worldId: { mode: worldId.mode, action: worldId.action },
       enrollment: enrollment ? { ...enrollment, phiShort: shortHash(enrollment.phi) } : null,
       claims: Object.fromEntries(claims),
     };
@@ -120,7 +182,9 @@ export async function createDemoServer(config: DemoServerConfig): Promise<Server
   return createServer((req, res) => {
     route(req, res, {
       "POST /api/enroll": handleEnroll,
-      "POST /api/claim": async (body) => handleClaim(parseService(body)),
+      "POST /api/claim": async (body) =>
+        handleClaim(parseService(body), (body as { worldIdProof?: WorldIdProof }).worldIdProof),
+      "GET /api/worldid/challenge": async () => handleChallenge(req),
       "GET /api/state": async () => state(),
       "POST /api/reset": async () => {
         pramaana = newSession();

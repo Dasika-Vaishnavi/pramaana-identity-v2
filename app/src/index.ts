@@ -6,10 +6,22 @@
  * then open the printed URL. Point at existing backends with TEE_URL/RPC_URL.
  */
 
+import { fileURLToPath } from "node:url";
 import { createDemoServer } from "./server.js";
 import { orchestrate, type Backends } from "./orchestrate.js";
 
+/** Load app/.env if present (World ID creds live here). No dep: Node ≥20.6
+ *  ships process.loadEnvFile, which throws when the file is absent. */
+function loadDotenv(): void {
+  try {
+    process.loadEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
+  } catch {
+    /* no .env — stub mode */
+  }
+}
+
 async function main(): Promise<void> {
+  loadDotenv();
   const port = Number(process.env.PORT ?? 8080);
 
   let backends: Backends | null = null;

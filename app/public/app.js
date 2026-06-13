@@ -17,12 +17,81 @@ async function api(method, path, body) {
 
 const enrollBtn = $("#enrollBtn");
 const enrollOut = $("#enrollOut");
+const worldBtn = $("#worldBtn");
+const worldOut = $("#worldOut");
 const resetBtn = $("#resetBtn");
 const claims = {}; // service -> record
+
+let enrolled = false;
+// Represents the unique human behind this browser session. In stub mode it is a
+// random id; in live mode each claim carries a real World ID proof instead.
+let worldHumanId = null;
+let worldMode = "stub";
 
 function serviceCard(service) {
   return $(`.service[data-service="${service}"]`);
 }
+
+// Claims require BOTH a Pramaana enrollment AND a World ID proof-of-human.
+function updateClaimButtons() {
+  const ready = enrolled && worldHumanId !== null;
+  $$(".claimBtn").forEach((b) => (b.disabled = !ready));
+}
+
+// --- World ID proof-of-human -------------------------------------------------
+// Hex SHA-256 of a string (browser SubtleCrypto), used in stub mode to derive a
+// per-(human, service) nullifier — mirroring World ID's per-action namespacing.
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Build the World ID proof for a service. Stub mode synthesises a labelled stub
+// token; live mode runs IDKit against the signed challenge from the backend.
+async function worldProofFor(service) {
+  const challenge = await api("GET", `/api/worldid/challenge?service=${encodeURIComponent(service)}`);
+  if (challenge.mode === "stub") {
+    const nullifier_hash = "0x" + (await sha256Hex(`${worldHumanId}:${service}`)).slice(0, 64);
+    return { stub: true, credential_type: "proof_of_human", nullifier_hash, action: challenge.action };
+  }
+  // Live mode: load IDKit from CDN and run the proof-of-human flow. Requires
+  // real APP_ID/ACTION in app/.env (see app/.env.example).
+  const { IDKit } = await import("https://esm.sh/@worldcoin/idkit-core@4");
+  const handle = IDKit.request({
+    app_id: challenge.app_id,
+    action: challenge.action,
+    rp_context: challenge.rp_context,
+  }).preset("proof_of_human");
+  const completion = await handle.pollUntilCompletion();
+  return completion.result;
+}
+
+worldBtn.addEventListener("click", async () => {
+  worldBtn.disabled = true;
+  worldBtn.textContent = "Verifying…";
+  try {
+    const s = await api("GET", "/api/state");
+    worldMode = s.worldId?.mode ?? "stub";
+    if (worldMode === "stub") {
+      // A fresh random "human" for this session.
+      worldHumanId = crypto.randomUUID();
+    } else {
+      // Live mode resolves a real proof per claim; flag readiness here.
+      worldHumanId = "live";
+    }
+    worldOut.classList.remove("hidden");
+    worldOut.innerHTML =
+      `<span class="pill ok">Proof-of-human ready${worldMode === "stub" ? " (stub)" : ""}</span>` +
+      `<div class="kv muted">Each claim is verified in the backend before any nullifier is spent.</div>`;
+    worldBtn.textContent = "Human verified ✓";
+    updateClaimButtons();
+  } catch (e) {
+    worldBtn.disabled = false;
+    worldBtn.textContent = "Verify with World ID";
+    worldOut.classList.remove("hidden");
+    worldOut.innerHTML = `<span class="pill block">Error: ${e.message}</span>`;
+  }
+});
 
 enrollBtn.addEventListener("click", async () => {
   enrollBtn.disabled = true;
@@ -35,7 +104,8 @@ enrollBtn.addEventListener("click", async () => {
       `<div class="kv">Φ = <b class="mono">${r.phiShort}</b>` +
       (r.alreadyEnrolled ? ` <span class="muted">(existing — dedup returned the same Φ)</span>` : ``) +
       `</div>`;
-    $$(".claimBtn").forEach((b) => (b.disabled = false));
+    enrolled = true;
+    updateClaimButtons();
     enrollBtn.textContent = "Enrolled ✓";
   } catch (e) {
     enrollBtn.disabled = false;
@@ -52,7 +122,8 @@ $$(".claimBtn").forEach((btn) => {
     btn.disabled = true;
     btn.textContent = "Claiming…";
     try {
-      const r = await api("POST", "/api/claim", { service });
+      const worldIdProof = await worldProofFor(service);
+      const r = await api("POST", "/api/claim", { service, worldIdProof });
       claims[service] = r;
       renderClaim(service, r);
     } catch (e) {
@@ -110,15 +181,19 @@ function shorten(hex) {
 (async () => {
   try {
     const s = await api("GET", "/api/state");
+    worldMode = s.worldId?.mode ?? "stub";
     if (s.enrollment) {
+      enrolled = true;
       enrollBtn.disabled = true;
       enrollBtn.textContent = "Enrolled ✓";
       enrollOut.classList.remove("hidden");
       enrollOut.innerHTML =
         `<span class="pill ok">Sybil-unique identity minted</span>` +
         `<div class="kv">Φ = <b class="mono">${s.enrollment.phiShort}</b></div>`;
-      $$(".claimBtn").forEach((b) => (b.disabled = false));
     }
+    // World ID proof-of-human is session-only (not persisted) — re-verify after
+    // a reload before claiming.
+    updateClaimButtons();
     for (const [service, record] of Object.entries(s.claims ?? {})) {
       claims[service] = record;
       renderClaim(service, record);

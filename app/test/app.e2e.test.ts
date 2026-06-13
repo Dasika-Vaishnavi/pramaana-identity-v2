@@ -26,6 +26,30 @@ async function api(method: string, path: string, body?: unknown): Promise<any> {
   return data;
 }
 
+/** Like api() but returns the raw status without throwing (for 403 gate cases). */
+async function rawApi(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; data: any }> {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: res.status, data: await res.json() };
+}
+
+/** A labelled stub World ID proof-of-human (server runs in stub mode in CI). */
+function stubHuman(nullifierHash: string) {
+  return { stub: true, credential_type: "proof_of_human", nullifier_hash: nullifierHash };
+}
+
+/** Claim carrying a valid stub proof-of-human. */
+function claim(service: string, nullifierHash: string) {
+  return api("POST", "/api/claim", { service, worldIdProof: stubHuman(nullifierHash) });
+}
+
 beforeAll(async () => {
   backends = await orchestrate({ anvilPort: 8551, teePort: 9971 });
   server = await createDemoServer({ teeUrl: backends.teeUrl, rpcUrl: backends.rpcUrl });
@@ -45,22 +69,38 @@ describe("Sybil-resistant airdrop demo", () => {
     expect(await res.text()).toContain("One human");
   });
 
-  it("DoD: enroll → claim → second claim blocked → two services unlinkable", async () => {
+  it("DoD: World ID gates claim → enroll → claim → second blocked → unlinkable", async () => {
+    await api("POST", "/api/reset");
+    const HUMAN = "0x" + "b2".repeat(32);
     const enroll = await api("POST", "/api/enroll");
     expect(enroll.phi).toMatch(/^[0-9a-f]{128}$/); // Φ = SHA3-512
     expect(enroll.alreadyEnrolled).toBe(false);
 
-    // Airdrop Alpha: first claim succeeds.
-    const alpha1 = await api("POST", "/api/claim", { service: "airdrop-alpha" });
+    // GATE BREAKS without proof-of-human: a claim with no World ID proof is
+    // rejected (403) and spends NOTHING (the valid claim below still succeeds).
+    const noProof = await rawApi("POST", "/api/claim", { service: "airdrop-alpha" });
+    expect(noProof.status).toBe(403);
+    expect(noProof.data.error).toMatch(/proof-of-human required/i);
+
+    // Wrong credential type is also rejected by the backend verifier.
+    const badType = await rawApi("POST", "/api/claim", {
+      service: "airdrop-alpha",
+      worldIdProof: { stub: true, credential_type: "selfie", nullifier_hash: HUMAN },
+    });
+    expect(badType.status).toBe(403);
+
+    // Airdrop Alpha: first claim succeeds once a valid proof-of-human is given.
+    const alpha1 = await claim("airdrop-alpha", HUMAN);
     expect(alpha1.status).toBe("claimed");
+    expect(alpha1.worldIdMode).toBe("stub"); // CI runs the backend in stub mode
 
     // Same human, same airdrop, again → Sybil block (nullifier already spent).
-    const alpha2 = await api("POST", "/api/claim", { service: "airdrop-alpha" });
+    const alpha2 = await claim("airdrop-alpha", HUMAN);
     expect(alpha2.status).toBe("blocked");
     expect(alpha2.nullifier).toBe(alpha1.nullifier); // same deterministic nullifier
 
     // Airdrop Beta: independent service → claim succeeds for the same human.
-    const beta1 = await api("POST", "/api/claim", { service: "airdrop-beta" });
+    const beta1 = await claim("airdrop-beta", HUMAN);
     expect(beta1.status).toBe("claimed");
 
     // Unlinkability: the two services see different nullifiers and scopes,

@@ -78,23 +78,36 @@
         <div id="enrollOut" class="kv hidden"></div>
       </section>
 
-      <!-- 2. Two independent airdrop services -->
+      <!-- 2. World ID — complementary proof-of-human gate -->
+      <section class="card">
+        <h2>2 · Prove you're a unique human (World ID)</h2>
+        <p class="muted" style="margin-top:0">
+          Pramaana proves Sybil-uniqueness via the issuer-unknown VOPRF; World ID adds an
+          orthogonal "unique living human" check, verified <b>in the backend</b>. The airdrop
+          claim below <b>breaks (403)</b> without a valid proof-of-human — the personhood layer
+          is load-bearing, not decorative.
+        </p>
+        <button id="worldBtn">Verify with World ID</button>
+        <div id="worldOut" class="kv hidden"></div>
+      </section>
+
+      <!-- 3. Two independent airdrop services -->
       <div class="row">
         <section class="card service" data-service="airdrop-alpha">
-          <h2>2 · Airdrop Alpha</h2>
+          <h2>3 · Airdrop Alpha</h2>
           <button class="claimBtn" disabled>Claim Alpha</button>
           <div class="claimOut kv"></div>
         </section>
         <section class="card service" data-service="airdrop-beta">
-          <h2>2 · Airdrop Beta</h2>
+          <h2>3 · Airdrop Beta</h2>
           <button class="claimBtn" disabled>Claim Beta</button>
           <div class="claimOut kv"></div>
         </section>
       </div>
 
-      <!-- 3. Unlinkability verdict -->
+      <!-- 4. Unlinkability verdict -->
       <section class="card">
-        <h2>3 · Can the two airdrops correlate you?</h2>
+        <h2>4 · Can the two airdrops correlate you?</h2>
         <div id="correlation" class="muted">Claim both airdrops to compare their nullifiers.</div>
       </section>
 
