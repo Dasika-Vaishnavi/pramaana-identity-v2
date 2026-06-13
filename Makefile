@@ -1,7 +1,7 @@
 # Pramaana monorepo. `make setup` once, then `make build`.
 export PATH := $(HOME)/.foundry/bin:$(PATH)
 
-.PHONY: build rust-build contracts-build js-install setup check-ts test demo clean
+.PHONY: build rust-build contracts-build js-install setup check-ts test demo web-dev web-build clean
 
 build: rust-build contracts-build js-install
 
@@ -40,7 +40,15 @@ demo: js-install
 	pnpm --filter @pramaana/app build
 	node app/dist/e2e-demo.js
 
+# V2 React frontend (runs on :5173, proxies /api → V3 app server on :8080)
+web-dev: js-install
+	pnpm --filter @pramaana/web dev
+
+web-build: js-install
+	pnpm --filter @pramaana/web build
+
 clean:
 	cargo clean
 	forge clean --root contracts
-	rm -rf node_modules sdk/node_modules sdk/dist app/node_modules app/dist circuits/node_modules circuits/build
+	rm -rf node_modules sdk/node_modules sdk/dist app/node_modules app/dist circuits/node_modules circuits/build web/node_modules web/dist
+

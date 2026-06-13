@@ -3,5 +3,7 @@ packages:
   - semaphore
   - app
   - circuits
+  - web
 allowBuilds:
+  '@swc/core': true
   esbuild: true
