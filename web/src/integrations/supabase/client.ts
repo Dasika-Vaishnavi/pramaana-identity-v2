@@ -50,23 +50,51 @@ function randomHex(bytes: number): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * The real on-chain registration coordinates from the most recent enroll
+ * (Decision 3). In V3 the on-chain `register()` runs INSIDE enroll, so the
+ * separate V2 `register-on-chain` step has no backend call of its own — it
+ * replays what enroll already recorded. We cache it here at enroll time.
+ */
+let lastOnChain: {
+  tx_hash: string | null;
+  block_number: number | null;
+  set_id: number;
+  set_index: number | null;
+  explorer_url: string | null;
+  commitment_size_bytes: number;
+  timing: { total_ms: number };
+} | null = null;
+
+/**
  * REAL: enrollment. Delegates to PramaanaClient (POST /api/enroll) and normalizes
- * the backend's `{ phi, phiShort, alreadyEnrolled }` into the EnrollmentResult
- * shape pages read (`phi_hash`, `timing`, ML-KEM sizes, …). A re-enroll of the
- * same identity comes back as `alreadyEnrolled` → surfaced as a Sybil error, which
- * is how the SybilDemo pages detect the block.
+ * the backend's `{ phi, phiShort, alreadyEnrolled, setId, setIndex, txHash, … }`
+ * into the EnrollmentResult shape pages read (`phi_hash`, `timing`, set_index, ML-KEM
+ * sizes, …). A re-enroll of the same identity comes back as `alreadyEnrolled` →
+ * surfaced as a Sybil error, which is how the SybilDemo pages detect the block.
  */
 async function invokePalcEnroll(): Promise<InvokeResult> {
   try {
     const r = await pramaana.enroll();
+    // Cache the real on-chain coords so register-on-chain can replay them.
+    lastOnChain = {
+      tx_hash: r.txHash,
+      block_number: r.blockNumber,
+      set_id: r.setId,
+      set_index: r.setIndex,
+      explorer_url: r.explorerUrl,
+      commitment_size_bytes: COMMITMENT_BYTES,
+      timing: { total_ms: r.timing.total_ms },
+    };
     return {
       data: {
         phi_hash: r.phi,
         phiShort: r.phiShort,
         alreadyEnrolled: r.alreadyEnrolled,
         sybil_resistant: r.alreadyEnrolled,
-        set_id: 1,
-        set_index: 0,
+        // Real on-chain registration order (Decision 3): set_id = single global
+        // anonymity set; set_index = 0-based ordinal in R's Registered stream.
+        set_id: r.setId,
+        set_index: r.setIndex,
         commitment_size_bytes: COMMITMENT_BYTES,
         pk_size_bytes: ML_KEM_PK_BYTES,
         ct_size_bytes: ML_KEM_CT_BYTES,
@@ -102,13 +130,16 @@ const INVOKERS: Record<string, (body: any) => InvokeResult | Promise<InvokeResul
   // ── REAL ────────────────────────────────────────────────────────────────
   "palc-enroll": () => invokePalcEnroll(),
 
-  // ── NEEDS-ENDPOINT (real crypto basis; W2 backend pending) ───────────────
-  // Registry Φ-registration is part of enroll in V3 but not yet exposed as a
-  // tx-returning endpoint. Shape it so Enroll/OnChain render without crashing.
-  "register-on-chain": () => ({
-    data: { tx_hash: "", block_number: 0, set_id: 1, set_index: 0, explorer_url: "" },
-    error: null,
-  }),
+  // ── REAL (replayed from enroll) ──────────────────────────────────────────
+  // Registry Φ-registration happens INSIDE enroll in V3 (Decision 3). This step
+  // replays the real coords enroll already recorded: tx_hash/block_number from
+  // the receipt, set_index = 0-based on-chain ordinal, set_id = 1. explorer_url
+  // is null on local anvil (never a fabricated URL). With no enroll yet this
+  // session there's nothing to register → graceful "enroll first" error.
+  "register-on-chain": () =>
+    lastOnChain
+      ? { data: { ...lastOnChain }, error: null }
+      : { data: null, error: { message: "Enroll first via /enroll — no on-chain registration in this session yet" } },
   // Per-service Semaphore pseudonym/nullifier — derive endpoint pending.
   "asc-prove": (body) => ({
     data: { pseudonym: "", nullifier: "", set_id: body?.set_id ?? 1 },

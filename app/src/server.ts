@@ -94,6 +94,36 @@ export function simGateZProof(phi32: string): string {
   return solidityPackedKeccak256(["string", "bytes32"], ["pramaana-sim-attestation", phi32]);
 }
 
+/** The real on-chain registration coordinates surfaced on enroll (Decision 3).
+ *  setIndex is the 0-based ordinal in R's Registered stream; set_id is the
+ *  single global anonymity set (1). txHash/blockNumber/explorerUrl are null when
+ *  not available (e.g. an unrecoverable event stream, or no configured explorer). */
+export interface RegistrationInfo {
+  setId: number;
+  setIndex: number | null;
+  txHash: string | null;
+  blockNumber: number | null;
+  explorerUrl: string | null;
+}
+
+/** Build a tx explorer URL ONLY from a configured base (PRAMAANA_EXPLORER_BASE);
+ *  on local anvil there is none, so this returns null — never a fabricated URL. */
+function explorerTxUrl(txHash: string | null): string | null {
+  const base = process.env.PRAMAANA_EXPLORER_BASE;
+  return base && txHash ? `${base.replace(/\/$/, "")}/tx/${txHash}` : null;
+}
+
+/** A register() revert meaning "this Φ/dedup is already recorded on-chain" —
+ *  benign for enroll (the identity simply exists), distinct from a real failure. */
+function isBenignDuplicate(e: unknown): boolean {
+  const name = (e as { revert?: { name?: string } }).revert?.name ?? "";
+  return (
+    name === "DuplicatePhi" ||
+    name === "AlreadyEnrolled" ||
+    /DuplicatePhi|AlreadyEnrolled/.test(String((e as Error).message))
+  );
+}
+
 /**
  * Deploys a fresh NullifierRegistry to the chain, then returns an http.Server
  * exposing the demo API + UI. One server = one demo "human".
@@ -156,13 +186,11 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     const handle = await pramaana.enroll(qrNumeric, { frames, capturedAtMs: Date.now() });
     const totalMs = Math.round(performance.now() - startedAt);
 
-    // §2 step 12: record the Φ commitment on-chain (Gate Z–gated). Only a
-    // genuinely new identity registers — a dedup hit (alreadyEnrolled) must NOT
-    // re-register (the contract would revert DuplicatePhi/AlreadyEnrolled). The
-    // tx fields + set_index are surfaced in Commit 3; this is plumbing only.
-    if (!handle.alreadyEnrolled) {
-      await registerOnChain(handle.phi, handle.dedupTag);
-    }
+    // §2 step 12: record the Φ commitment on-chain (Gate Z–gated), or — for a
+    // dedup hit (alreadyEnrolled) — recover the Φ's PRIOR registration without
+    // re-registering. Either way we surface the real on-chain coordinates
+    // (Decision 3): set_id, the 0-based set_index, and the tx hash/block.
+    const onChain = await recordOnChain(handle.phi, handle.dedupTag, handle.alreadyEnrolled);
 
     enrollment = { phi: handle.phi, alreadyEnrolled: handle.alreadyEnrolled };
     return {
@@ -170,33 +198,82 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
       phiShort: shortHash(handle.phi),
       alreadyEnrolled: handle.alreadyEnrolled,
       timing: { total_ms: totalMs },
+      setId: onChain.setId,
+      setIndex: onChain.setIndex,
+      txHash: onChain.txHash,
+      blockNumber: onChain.blockNumber,
+      explorerUrl: onChain.explorerUrl,
     };
   }
 
-  /** Register Φ on R with the SIM Gate Z proof. A Φ/dedup already recorded
-   *  on-chain is treated as "already registered" (benign) rather than crashing
-   *  the enroll; any other revert is a real failure and propagates. */
-  async function registerOnChain(phiHex: string, dedupHex: string): Promise<void> {
+  /**
+   * Record Φ on R (new identity) or recover its prior registration (dedup hit),
+   * returning the real on-chain coordinates. A new Φ is registered with the SIM
+   * Gate Z proof; set_index = identityCount-1 read right after the tx, and the
+   * tx hash/block come from the receipt. A dedup hit does NOT re-register: we
+   * recover the Φ's original set_index (and original tx hash/block, which the
+   * Registered event log carries cheaply) from the on-chain event stream. A
+   * benign DuplicatePhi/AlreadyEnrolled revert (Φ already on-chain) also falls
+   * back to event-stream recovery; any other revert is a real failure.
+   */
+  async function recordOnChain(
+    phiHex: string,
+    dedupHex: string,
+    alreadyEnrolled: boolean,
+  ): Promise<RegistrationInfo> {
     const phi32 = phi64ToBytes32(phiHex);
-    const dedupTag = dedupHex.startsWith("0x") ? dedupHex : `0x${dedupHex}`;
-    try {
-      const tx = await (registryR as BaseContract & { register: (...a: unknown[]) => Promise<{ wait: () => Promise<unknown> }> }).register(
-        phi32,
-        dedupTag,
-        simGateZProof(phi32),
-      );
-      await tx.wait();
-    } catch (e) {
-      const name = (e as { revert?: { name?: string } }).revert?.name ?? "";
-      if (
-        name === "DuplicatePhi" ||
-        name === "AlreadyEnrolled" ||
-        /DuplicatePhi|AlreadyEnrolled/.test(String((e as Error).message))
-      ) {
-        return;
+    const r = registryR as BaseContract & {
+      register: (
+        phi: string,
+        dedup: string,
+        proof: string,
+      ) => Promise<{ wait: () => Promise<{ hash: string; blockNumber: number } | null> }>;
+      identityCount: () => Promise<bigint>;
+    };
+
+    if (!alreadyEnrolled) {
+      const dedupTag = dedupHex.startsWith("0x") ? dedupHex : `0x${dedupHex}`;
+      try {
+        const tx = await r.register(phi32, dedupTag, simGateZProof(phi32));
+        const receipt = await tx.wait();
+        const count = await r.identityCount();
+        const txHash = receipt?.hash ?? null;
+        return {
+          setId: 1,
+          setIndex: Number(count) - 1,
+          txHash,
+          blockNumber: receipt?.blockNumber ?? null,
+          explorerUrl: explorerTxUrl(txHash),
+        };
+      } catch (e) {
+        if (!isBenignDuplicate(e)) throw e;
+        // Φ already on-chain (defensive) → recover its prior registration below.
       }
-      throw e;
     }
+    return recoverRegistration(phi32);
+  }
+
+  /** Find the Φ's 0-based ordinal in the Registered event stream (= set_index)
+   *  and its original tx hash/block. queryFilter returns logs in emission order,
+   *  so the position IS the registration order. */
+  async function recoverRegistration(phi32: string): Promise<RegistrationInfo> {
+    const events = await registryR.queryFilter(registryR.filters.Registered());
+    const idx = events.findIndex(
+      (e) =>
+        "args" in e &&
+        (e.args as unknown as { phi: string }).phi.toLowerCase() === phi32.toLowerCase(),
+    );
+    if (idx < 0) {
+      return { setId: 1, setIndex: null, txHash: null, blockNumber: null, explorerUrl: null };
+    }
+    const log = events[idx];
+    return {
+      setId: 1,
+      setIndex: idx,
+      txHash: log.transactionHash,
+      blockNumber: log.blockNumber,
+      explorerUrl: explorerTxUrl(log.transactionHash),
+    };
   }
 
   async function handleClaim(service: ServiceId, worldIdProof?: WorldIdProof): Promise<unknown> {

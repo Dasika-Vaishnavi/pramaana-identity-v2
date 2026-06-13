@@ -34,6 +34,16 @@ export interface EnrollResult {
   alreadyEnrolled: boolean;
   /** Real server-measured enrollment wall-clock; no per-phase breakdown (Decision 1). */
   timing: { total_ms: number };
+  /** Real on-chain registration coordinates (Decision 3). set_id is the single
+   *  global anonymity set (1); setIndex is the 0-based ordinal in R's Registered
+   *  stream (same value on an alreadyEnrolled re-enroll — the prior index, not a
+   *  new one). txHash/blockNumber come from the registration receipt (the original
+   *  tx on a dedup hit); explorerUrl is null on local anvil. */
+  setId: number;
+  setIndex: number | null;
+  txHash: string | null;
+  blockNumber: number | null;
+  explorerUrl: string | null;
 }
 
 /** Response of POST /api/claim (see app/src/server.ts handleClaim). */
