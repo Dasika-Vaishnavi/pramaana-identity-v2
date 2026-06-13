@@ -65,6 +65,42 @@ export interface AppState {
 /** A World ID proof-of-human payload, as forwarded to /api/claim. */
 export type WorldIdProof = Record<string, unknown>;
 
+/** Response of GET /api/registry/stats — counts straight from the on-chain R. */
+export interface RegistryStats {
+  /** identityCount() storage var. */
+  total: number;
+  /** Count of Registered events (== total by construction; derived independently). */
+  onChainConfirmed: number;
+}
+
+/** One row of GET /api/registry/feed — a Registered event with its ordinal. */
+export interface RegistryFeedEntry {
+  phi: string;
+  dedupTag: string;
+  /** 0-based ordinal in R's Registered stream. */
+  setIndex: number;
+  txHash: string;
+  blockNumber: number;
+}
+
+/** Response of GET /api/registry/lookup?phi=<Φ> — whether a Φ is registered. */
+export interface RegistryLookup {
+  registered: boolean;
+  setIndex: number | null;
+  txHash: string | null;
+  blockNumber: number | null;
+}
+
+/** One row of GET /api/enrollment-log — the server's in-memory enroll history. */
+export interface EnrollmentLogEntry {
+  phiShort: string;
+  total_ms: number;
+  setIndex: number | null;
+  txHash: string | null;
+  /** ISO-8601 timestamp the enroll was recorded. */
+  createdAt: string;
+}
+
 export class PramaanaClient {
   private baseUrl: string;
 
@@ -114,6 +150,26 @@ export class PramaanaClient {
   /** Fetch a World ID challenge for a given service action. */
   worldIdChallenge(service: string): Promise<unknown> {
     return this.get(`/api/worldid/challenge?service=${encodeURIComponent(service)}`);
+  }
+
+  /** Registry totals straight from the on-chain R (no fabricated zeros). */
+  registryStats(): Promise<RegistryStats> {
+    return this.get<RegistryStats>("/api/registry/stats");
+  }
+
+  /** Recent on-chain Registered events, newest first (default 20). */
+  registryFeed(limit = 20): Promise<RegistryFeedEntry[]> {
+    return this.get<RegistryFeedEntry[]>(`/api/registry/feed?limit=${limit}`);
+  }
+
+  /** Whether a Φ (64-byte hex, as enroll returns) is registered on-chain. */
+  registryLookup(phi: string): Promise<RegistryLookup> {
+    return this.get<RegistryLookup>(`/api/registry/lookup?phi=${encodeURIComponent(phi)}`);
+  }
+
+  /** The server's in-memory enroll history, newest first (default 50). */
+  enrollmentLog(limit = 50): Promise<EnrollmentLogEntry[]> {
+    return this.get<EnrollmentLogEntry[]>(`/api/enrollment-log?limit=${limit}`);
   }
 
   /** Reset the session (re-enroll a fresh "human"; for demo purposes). */

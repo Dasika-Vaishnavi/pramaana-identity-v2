@@ -106,6 +106,26 @@ export interface RegistrationInfo {
   explorerUrl: string | null;
 }
 
+/** One Registered event from R, with its 0-based ordinal (= setIndex). The
+ *  registry-read endpoints (stats/feed/lookup) all derive from this stream. */
+export interface RegistrationEvent {
+  phi: string;
+  dedupTag: string;
+  setIndex: number;
+  txHash: string;
+  blockNumber: number;
+}
+
+/** One in-memory enroll-history row (C4). Server-side audit of enroll attempts;
+ *  every value is real (setIndex/txHash come from the on-chain registration). */
+export interface EnrollLogEntry {
+  phiShort: string;
+  total_ms: number;
+  setIndex: number | null;
+  txHash: string | null;
+  createdAt: string;
+}
+
 /** Build a tx explorer URL ONLY from a configured base (PRAMAANA_EXPLORER_BASE);
  *  on local anvil there is none, so this returns null — never a fabricated URL. */
 function explorerTxUrl(txHash: string | null): string | null {
@@ -172,6 +192,10 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
   let pramaana = newSession();
   let enrollment: { phi: string; alreadyEnrolled: boolean } | null = null;
   const claims = new Map<ServiceId, ClaimRecord>();
+  // In-memory enroll history (C4) — a running audit of every enroll attempt,
+  // newest appended last. Like the on-chain Registered stream it backs, this is
+  // a ledger, so it deliberately PERSISTS across /api/reset.
+  const enrollLog: EnrollLogEntry[] = [];
 
   function newSession(): Pramaana {
     return new Pramaana({ teeUrl: config.teeUrl, signer: wallet, nullifierRegistryAddress });
@@ -193,6 +217,13 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     const onChain = await recordOnChain(handle.phi, handle.dedupTag, handle.alreadyEnrolled);
 
     enrollment = { phi: handle.phi, alreadyEnrolled: handle.alreadyEnrolled };
+    enrollLog.push({
+      phiShort: shortHash(handle.phi),
+      total_ms: totalMs,
+      setIndex: onChain.setIndex,
+      txHash: onChain.txHash,
+      createdAt: new Date().toISOString(),
+    });
     return {
       phi: handle.phi,
       phiShort: shortHash(handle.phi),
@@ -253,27 +284,82 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     return recoverRegistration(phi32);
   }
 
-  /** Find the Φ's 0-based ordinal in the Registered event stream (= set_index)
-   *  and its original tx hash/block. queryFilter returns logs in emission order,
-   *  so the position IS the registration order. */
-  async function recoverRegistration(phi32: string): Promise<RegistrationInfo> {
+  /** The full Registered event stream from R in emission order, each carrying
+   *  its 0-based ordinal (= setIndex). queryFilter returns logs in block/log
+   *  order, so the position IS the registration order. The single source of
+   *  truth for recoverRegistration and the registry-read endpoints. */
+  async function listRegistrations(): Promise<RegistrationEvent[]> {
     const events = await registryR.queryFilter(registryR.filters.Registered());
-    const idx = events.findIndex(
-      (e) =>
-        "args" in e &&
-        (e.args as unknown as { phi: string }).phi.toLowerCase() === phi32.toLowerCase(),
+    const out: RegistrationEvent[] = [];
+    events.forEach((e, idx) => {
+      if (!("args" in e)) return;
+      const args = e.args as unknown as { phi: string; dedupTag: string };
+      out.push({
+        phi: args.phi,
+        dedupTag: args.dedupTag,
+        setIndex: idx,
+        txHash: e.transactionHash,
+        blockNumber: e.blockNumber,
+      });
+    });
+    return out;
+  }
+
+  /** Find the Φ's prior registration (setIndex + original tx hash/block) in the
+   *  Registered stream. Used by the alreadyEnrolled enroll path (no re-register). */
+  async function recoverRegistration(phi32: string): Promise<RegistrationInfo> {
+    const hit = (await listRegistrations()).find(
+      (r) => r.phi.toLowerCase() === phi32.toLowerCase(),
     );
-    if (idx < 0) {
+    if (!hit) {
       return { setId: 1, setIndex: null, txHash: null, blockNumber: null, explorerUrl: null };
     }
-    const log = events[idx];
     return {
       setId: 1,
-      setIndex: idx,
-      txHash: log.transactionHash,
-      blockNumber: log.blockNumber,
-      explorerUrl: explorerTxUrl(log.transactionHash),
+      setIndex: hit.setIndex,
+      txHash: hit.txHash,
+      blockNumber: hit.blockNumber,
+      explorerUrl: explorerTxUrl(hit.txHash),
     };
+  }
+
+  // ── Registry-read endpoints (C4) — every value is real on-chain/in-memory ──
+
+  /** GET /api/registry/stats — counts straight from R: total from the
+   *  identityCount storage var, onChainConfirmed from the Registered event log
+   *  (equal by construction, but derived independently — neither fabricated). */
+  async function registryStats(): Promise<unknown> {
+    const r = registryR as BaseContract & { identityCount: () => Promise<bigint> };
+    const total = Number(await r.identityCount());
+    const onChainConfirmed = (await listRegistrations()).length;
+    return { total, onChainConfirmed };
+  }
+
+  /** GET /api/registry/feed?limit=N — recent Registered events, newest first. */
+  async function registryFeed(req: IncomingMessage): Promise<unknown> {
+    const limit = parseLimit(req, 20);
+    return (await listRegistrations()).reverse().slice(0, limit);
+  }
+
+  /** GET /api/registry/lookup?phi=<Φ> — is this Φ registered, and where. The
+   *  phi param is the 64-byte Φ hex (what enroll returns); we hash it to the
+   *  on-chain bytes32 key exactly as registration does. */
+  async function registryLookup(req: IncomingMessage): Promise<unknown> {
+    const phi = new URL(req.url ?? "", "http://x").searchParams.get("phi");
+    if (!phi) throw new HttpError(400, "phi query param required");
+    const phi32 = phi64ToBytes32(phi);
+    const hit = (await listRegistrations()).find(
+      (r) => r.phi.toLowerCase() === phi32.toLowerCase(),
+    );
+    return hit
+      ? { registered: true, setIndex: hit.setIndex, txHash: hit.txHash, blockNumber: hit.blockNumber }
+      : { registered: false, setIndex: null, txHash: null, blockNumber: null };
+  }
+
+  /** GET /api/enrollment-log?limit=N — the in-memory enroll history, newest first. */
+  function enrollmentLog(req: IncomingMessage): unknown {
+    const limit = parseLimit(req, 50);
+    return enrollLog.slice().reverse().slice(0, limit);
   }
 
   async function handleClaim(service: ServiceId, worldIdProof?: WorldIdProof): Promise<unknown> {
@@ -350,6 +436,10 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
         handleClaim(parseService(body), (body as { worldIdProof?: WorldIdProof }).worldIdProof),
       "GET /api/worldid/challenge": async () => handleChallenge(req),
       "GET /api/state": async () => state(),
+      "GET /api/registry/stats": async () => registryStats(),
+      "GET /api/registry/feed": async () => registryFeed(req),
+      "GET /api/registry/lookup": async () => registryLookup(req),
+      "GET /api/enrollment-log": async () => enrollmentLog(req),
       "POST /api/reset": async () => {
         pramaana = newSession();
         enrollment = null;
@@ -418,6 +508,13 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   } catch {
     sendJson(res, 404, { error: "not found" });
   }
+}
+
+/** Parse a positive integer `limit` query param, falling back when absent/bad. */
+function parseLimit(req: IncomingMessage, fallback: number): number {
+  const v = new URL(req.url ?? "", "http://x").searchParams.get("limit");
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
 function parseService(body: unknown): ServiceId {
