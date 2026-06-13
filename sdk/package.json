@@ -1,0 +1,24 @@
+{
+  "name": "@pramaana/sdk",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pramaana drop-in SDK: enroll() / prove(serviceId) / verifyOnChain()",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@pramaana/semaphore": "workspace:*",
+    "ethers": "^6.13.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@pramaana/semaphore",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Per-service unlinkable nullifiers (ARCHITECTURE.md §3): Semaphore identity from (Φ, sk_IdR), membership proofs, NullifierRegistry client",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@semaphore-protocol/core": "4.14.2",
+    "ethers": "^6.13.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}

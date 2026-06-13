@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = ""
+
+[workspace.dependencies]
+# Shared dependency versions go here as crates gain real implementations.
+
+# RSA keygen in tests is unusably slow without optimizing the bignum math.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3
+
+# openjp2 is a c2rust translation that keeps C's free(NULL)-is-a-no-op idiom;
+# Rust's debug UB-checks abort on it during codec teardown. Run the package
+# the way it ships in release builds. See DECISIONS.md.
+[profile.dev.package.openjp2]
+debug-assertions = false
+opt-level = 3
+
+# The palc determinism test runs 1000 ML-KEM keygens; keep them fast in dev.
+[profile.dev.package.libcrux-ml-kem]
+opt-level = 3
+
+[profile.dev.package.libcrux-sha3]
+opt-level = 3
+
+# The voprf blindness test does thousands of ristretto scalar mults.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
