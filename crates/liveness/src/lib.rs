@@ -19,7 +19,7 @@ mod sim;
 pub use capture::{verify_capture, CaptureMetadata, ChallengeNonce, LiveCapture};
 pub use jp2::decode_jp2;
 #[cfg(feature = "onnx")]
-pub use onnx::{OnnxMatcher, DEFAULT_ONNX_THRESHOLD};
+pub use onnx::{OnnxMatcher, DEFAULT_ARCFACE_THRESHOLD};
 #[cfg(feature = "sim")]
 pub use sim::SimMatcher;
 
@@ -40,6 +40,9 @@ pub enum Error {
     #[cfg(feature = "onnx")]
     #[error("ONNX runtime error: {0}")]
     Onnx(String),
+    #[cfg(feature = "onnx")]
+    #[error("no face detected in the {0} image")]
+    NoFaceDetected(&'static str),
 }
 
 /// Minimal RGB8 image (row-major, 3 bytes/pixel). Face photos are PII:

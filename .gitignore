@@ -7,3 +7,10 @@ out/
 *.log
 .DS_Store
 cache/
+# Face-match weights (InsightFace, non-commercial-research license — never committed).
+models/
+# Face fixtures for the onnx accept/reject test: only commit CC0/public-domain
+# faces. Ignore everything except an explicit allowlist + the README.
+crates/liveness/testdata/faces/*
+!crates/liveness/testdata/faces/README.md
+!crates/liveness/testdata/faces/.gitkeep
