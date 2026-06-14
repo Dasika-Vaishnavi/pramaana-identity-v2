@@ -13,7 +13,7 @@ use attestation::sim::SimVerifier;
 use enrollment_tee::http::{FixtureState, TeeServer, TeeService};
 use enrollment_tee::registry::InMemoryRegistry;
 use enrollment_tee::{AttestationMode, EnrollmentTee, HttpVaultClient};
-use liveness::SimMatcher;
+use liveness::{FaceMatcher, SimMatcher};
 use voprf_vault::http::VaultServer;
 use voprf_vault::VoprfVault;
 
@@ -44,7 +44,7 @@ fn main() {
         uidai_pubkey,
         HttpVaultClient::connect(&vault_url).expect("connect to vault"),
         InMemoryRegistry::default(),
-        SimMatcher::default(),
+        select_matcher(),
     );
     let service = Arc::new(TeeService::with_fixture(
         tee,
@@ -58,4 +58,43 @@ fn main() {
     let (local, server_thread) = TeeServer::spawn(service, &addr).expect("spawn tee server");
     println!("tee-server listening on http://{local} (SIM mode, /fixture enabled)");
     server_thread.join().expect("server thread");
+}
+
+/// Choose the face matcher from the environment (§2 step 5). Default is the sim
+/// matcher (no model needed — CI / `make demo` stay green). Setting BOTH
+/// `PRAMAANA_SCRFD_MODEL` and `PRAMAANA_ARCFACE_MODEL` selects the real
+/// SCRFD+ArcFace matcher. If onnx is requested but the build lacks
+/// `--features onnx`, or a model fails to load, this is a HARD ERROR — never a
+/// silent fallback to sim (the security claim of this layer depends on it).
+fn select_matcher() -> Box<dyn FaceMatcher + Send + Sync> {
+    match (
+        std::env::var("PRAMAANA_SCRFD_MODEL").ok(),
+        std::env::var("PRAMAANA_ARCFACE_MODEL").ok(),
+    ) {
+        (None, None) => Box::new(SimMatcher::default()),
+        (Some(scrfd), Some(arcface)) => load_onnx_matcher(&scrfd, &arcface),
+        _ => panic!(
+            "set BOTH PRAMAANA_SCRFD_MODEL and PRAMAANA_ARCFACE_MODEL (or neither for sim mode)"
+        ),
+    }
+}
+
+#[cfg(feature = "onnx")]
+fn load_onnx_matcher(scrfd: &str, arcface: &str) -> Box<dyn FaceMatcher + Send + Sync> {
+    let threshold = std::env::var("PRAMAANA_ARCFACE_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(liveness::DEFAULT_ARCFACE_THRESHOLD);
+    let matcher = liveness::OnnxMatcher::from_model_files(scrfd, arcface, threshold)
+        .unwrap_or_else(|e| panic!("failed to load ONNX face models ({scrfd}, {arcface}): {e}"));
+    eprintln!("tee-server: real SCRFD+ArcFace matcher loaded (threshold {threshold})");
+    Box::new(matcher)
+}
+
+#[cfg(not(feature = "onnx"))]
+fn load_onnx_matcher(_scrfd: &str, _arcface: &str) -> Box<dyn FaceMatcher + Send + Sync> {
+    panic!(
+        "PRAMAANA_SCRFD_MODEL/ARCFACE_MODEL set but tee-server was built without `--features onnx` \
+         — rebuild with `--features sim-fixture,onnx` or unset the vars (no silent sim fallback)"
+    );
 }

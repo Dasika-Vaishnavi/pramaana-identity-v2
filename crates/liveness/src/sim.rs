@@ -7,7 +7,7 @@
 //! sensible threshold. This is a stand-in for face recognition, not a face
 //! recognizer — the `onnx` feature provides the real thing.
 
-use crate::{Error, FaceMatcher, Image, MatchScore};
+use crate::{Error, FaceMatcher, Image, MatchScore, MatcherKind};
 
 const GRID: u32 = 8;
 const DEFAULT_THRESHOLD: f32 = 0.90;
@@ -61,5 +61,9 @@ impl FaceMatcher for SimMatcher {
             score: ((cosine + 1.0) / 2.0).clamp(0.0, 1.0),
             threshold: self.threshold,
         })
+    }
+
+    fn kind(&self) -> MatcherKind {
+        MatcherKind::Sim
     }
 }

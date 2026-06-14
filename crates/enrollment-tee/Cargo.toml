@@ -11,6 +11,9 @@ http-server = ["dep:tiny_http", "dep:base64"]
 # self-contained `tee-server` binary (in-process sim vault). Never enable in
 # a real deployment.
 sim-fixture = ["http-server", "aadhaar-qr/test-gen", "dep:voprf-vault"]
+# Real face matcher (SCRFD + ArcFace) in tee-server's matcher selection; needs
+# provisioned model files at runtime. Without it the binary is sim-only.
+onnx = ["liveness/onnx"]
 
 [[bin]]
 name = "tee-server"

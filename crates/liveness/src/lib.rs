@@ -109,9 +109,43 @@ impl MatchScore {
     }
 }
 
+/// Which matcher produced a [`MatchScore`] — recorded in the enrollment's
+/// biometric-match fact so a verifier can tell a real face match from the
+/// deterministic sim stand-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatcherKind {
+    /// Deterministic perceptual-fingerprint stand-in (default `sim`).
+    Sim,
+    /// Real SCRFD-detect + ArcFace-embed pipeline (`onnx`).
+    ArcFaceScrfd,
+}
+
+impl MatcherKind {
+    /// Stable wire string for the fact (`"sim"` | `"arcface-scrfd"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sim => "sim",
+            Self::ArcFaceScrfd => "arcface-scrfd",
+        }
+    }
+}
+
 /// Matches a live capture frame against the reference photo from the QR.
 pub trait FaceMatcher {
     fn match_faces(&self, live: &Image, reference: &Image) -> Result<MatchScore, Error>;
+    /// Which implementation this is (recorded in the biometric-match fact).
+    fn kind(&self) -> MatcherKind;
+}
+
+/// Lets `tee-server` choose sim vs onnx at runtime behind a single type
+/// (`EnrollmentTee<Box<dyn FaceMatcher + Send + Sync>, _>`).
+impl FaceMatcher for Box<dyn FaceMatcher + Send + Sync> {
+    fn match_faces(&self, live: &Image, reference: &Image) -> Result<MatchScore, Error> {
+        (**self).match_faces(live, reference)
+    }
+    fn kind(&self) -> MatcherKind {
+        (**self).kind()
+    }
 }
 
 #[cfg(test)]

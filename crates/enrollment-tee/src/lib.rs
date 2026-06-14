@@ -21,7 +21,9 @@ pub use vault_client::HttpVaultClient;
 use aadhaar_qr::{AadhaarRecord, RsaPublicKey};
 use attestation::sim::SimAttester;
 use attestation::{bind_report_data, Attester};
-use liveness::{decode_jp2, verify_capture, ChallengeNonce, FaceMatcher, LiveCapture};
+use liveness::{
+    decode_jp2, verify_capture, ChallengeNonce, FaceMatcher, Image, LiveCapture, MatcherKind,
+};
 use rand_core::{OsRng, RngCore};
 use registry::{Registry, RegistryError, GATE_Z_CONTEXT};
 use sha3::{Digest, Sha3_256};
@@ -29,6 +31,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 const STABLE_ID_DOMAIN: &[u8] = b"pramaana-stable-id-v1";
 const DEDUP_DOMAIN: &[u8] = b"pramaana-dedup-v1";
+/// Domain separator between Φ and the biometric fact in the Gate Z statement.
+const GATE_Z_BIOMETRIC_TAG: u8 = 0xB1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnrollError {
@@ -39,7 +43,13 @@ pub enum EnrollError {
     #[error("liveness rejected: {0}")]
     Liveness(#[from] liveness::Error),
     #[error("live face does not match the QR photo (score {score}, threshold {threshold})")]
-    FaceMismatch { score: f32, threshold: f32 },
+    FaceMismatch {
+        score: f32,
+        threshold: f32,
+        /// Which matcher rejected — surfaced as the {performed:true, passed:false}
+        /// biometric fact's `kind` at the app layer (C3).
+        kind: MatcherKind,
+    },
     #[error("vault call failed: {0}")]
     Vault(String),
     #[error("gate k / VOPRF failure: {0}")]
@@ -87,6 +97,24 @@ pub struct EnrollmentRequest {
     pub liveness_nonce: ChallengeNonce,
 }
 
+/// The public, NON-BIOMETRIC fact that an in-enclave live-face ↔ credential-photo
+/// match was performed for this Φ (ARCHITECTURE.md §2 step 5). This is the ONLY
+/// thing about the biometric that survives enrollment: no frame, no decoded
+/// photo, no embedding — just `{performed, passed, kind}`. It is bound into the
+/// Gate Z attestation statement ([`gate_z_value`]) so a verifier recomputes and
+/// rejects a tampered fact (it is tamper-evident, not self-reported).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BiometricMatch {
+    /// A match was attempted in-enclave (always true once step 5 runs).
+    pub performed: bool,
+    /// The live face matched the credential photo at/above threshold. A `false`
+    /// here ABORTS enrollment (no Φ minted), so a minted handle always carries
+    /// `passed: true`; `false` is only surfaced on the FaceMismatch error path.
+    pub passed: bool,
+    /// Sim stand-in vs the real SCRFD+ArcFace pipeline.
+    pub kind: MatcherKind,
+}
+
 /// §2 step 13 output: public data only. No PII, no sk_IdR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrollmentHandle {
@@ -96,6 +124,8 @@ pub struct EnrollmentHandle {
     /// True when dedup found an existing identity (Sybil block: the SAME Φ
     /// is returned, no second identity is minted).
     pub already_enrolled: bool,
+    /// The attested, non-biometric "a face match was performed and passed" fact.
+    pub biometric: BiometricMatch,
 }
 
 /// What `enroll` hands back to C over the attested channel: the public
@@ -163,32 +193,38 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
 
     /// §2 steps 4–13. Consumes the request; all PII is wiped before return.
     pub fn enroll(&self, request: EnrollmentRequest) -> Result<EnrollmentOutput, EnrollError> {
-        self.enroll_inner(request, |_| {})
+        self.enroll_inner(request, |_, _| {})
     }
 
     /// Implementation seam (same pattern as palc): `post_wipe` observes the
-    /// PII scratch buffers after wiping, before they are freed.
+    /// wiped PII — the QR/stable-id/decoded-photo scratch AND the live capture
+    /// frames — before they are freed (step 13).
     pub(crate) fn enroll_inner(
         &self,
         request: EnrollmentRequest,
-        post_wipe: impl FnOnce(&PiiScratch),
+        post_wipe: impl FnOnce(&PiiScratch, &LiveCapture),
     ) -> Result<EnrollmentOutput, EnrollError> {
         let EnrollmentRequest {
             qr_numeric,
-            live_capture,
+            mut live_capture,
             liveness_nonce,
         } = request;
         let mut scratch = PiiScratch {
             qr_numeric,
             stable_id: Vec::new(),
+            reference: None,
         };
 
-        // Run all steps, then wipe scratch on BOTH success and error paths.
-        // live_capture drops at the end of this call (frames zeroize on
-        // drop); AadhaarRecord / OprfOutput / Palc zeroize in their crates.
+        // Run all steps, then wipe ALL PII on BOTH success and error paths: the
+        // scratch (QR, stable_id, decoded credential photo) AND the live frames
+        // — explicitly, not just via ZeroizeOnDrop, so the observer sees zeroed
+        // buffers. Embeddings are wiped inside the matcher (liveness, C1).
         let result = self.enroll_steps(&mut scratch, &live_capture, &liveness_nonce);
+        for frame in &mut live_capture.frames {
+            frame.zeroize();
+        }
         scratch.wipe();
-        post_wipe(&scratch);
+        post_wipe(&scratch, &live_capture);
         result
     }
 
@@ -202,20 +238,37 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
         let record = aadhaar_qr::parse_and_verify(&scratch.qr_numeric, &self.uidai_pubkey)?;
 
         // §2 steps 3/5: accept the capture (nonce echo, anti-replay), then
-        // match the live face to the QR photo INSIDE the enclave.
+        // match the live face to the QR photo INSIDE the enclave. The decoded
+        // photo lives in `scratch` so it is wiped (and observed) before return.
         verify_capture(capture, liveness_nonce)?;
-        let reference = decode_jp2(&record.photo_jp2)?;
-        let live_frame = capture
-            .frames
-            .first()
-            .expect("verify_capture requires frames");
-        let score = self.matcher.match_faces(live_frame, &reference)?;
+        scratch.reference = Some(decode_jp2(&record.photo_jp2)?);
+        let score = {
+            let reference = scratch
+                .reference
+                .as_ref()
+                .expect("reference photo just set");
+            let live_frame = capture
+                .frames
+                .first()
+                .expect("verify_capture requires frames");
+            self.matcher.match_faces(live_frame, reference)?
+        };
+        let kind = self.matcher.kind();
+        // A failed match ABORTS — no Φ minted, no registration. The
+        // {performed:true, passed:false} fact is reconstructed from this error
+        // at the app layer (C3).
         if !score.is_match() {
             return Err(EnrollError::FaceMismatch {
                 score: score.score,
                 threshold: score.threshold,
+                kind,
             });
         }
+        let biometric = BiometricMatch {
+            performed: true,
+            passed: true,
+            kind,
+        };
 
         // §2 step 6: stable timestamp-stripped identifier, then blind it.
         scratch.stable_id = encode_stable_id(&record);
@@ -256,18 +309,24 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
                     phi: palc.phi,
                     dedup_tag,
                     already_enrolled: true,
+                    biometric,
                 },
                 sk_idr: Zeroizing::new(palc.sk_idr().to_vec()),
             });
         }
 
-        // §2 step 12 (Gate Z, sim): prove C_commit came from reviewed code
-        // on approved hardware; R verifies and only then records.
-        let gatez_proof = self
-            .attester
-            .quote(&bind_report_data(GATE_Z_CONTEXT, &palc.phi))?;
+        // §2 step 12 (Gate Z, sim): prove C_commit came from reviewed code on
+        // approved hardware. The attested statement binds Φ TOGETHER WITH the
+        // biometric-match fact (gate_z_value), so R recomputes and rejects a
+        // tampered fact — it is tamper-evident, not self-reported. This is the
+        // seam a real DCAP-in-ZK / ProveKit Gate Z verifier proves over;
+        // IGateZVerifier stays swappable. R verifies and only then records.
+        let gatez_proof = self.attester.quote(&bind_report_data(
+            GATE_Z_CONTEXT,
+            &gate_z_value(&palc.phi, &biometric),
+        ))?;
         self.registry
-            .register(&palc.phi, &dedup_tag, &gatez_proof)?;
+            .register(&palc.phi, &dedup_tag, &biometric, &gatez_proof)?;
 
         // §2 step 13: palc and oprf_output drop here → zeroized. The single
         // surviving copy of sk_IdR rides back to C (Zeroizing) — T keeps
@@ -277,6 +336,7 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
                 phi: palc.phi,
                 dedup_tag,
                 already_enrolled: false,
+                biometric,
             },
             sk_idr: Zeroizing::new(palc.sk_idr().to_vec()),
         })
@@ -287,18 +347,26 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
 pub(crate) struct PiiScratch {
     pub(crate) qr_numeric: String,
     pub(crate) stable_id: Vec<u8>,
+    /// The decoded credential photo (PII). Held here — not just as a local —
+    /// so it is wiped and observed before enroll returns (step 13).
+    pub(crate) reference: Option<Image>,
 }
 
 impl PiiScratch {
     fn wipe(&mut self) {
         self.qr_numeric.zeroize();
         self.stable_id.zeroize();
+        if let Some(photo) = &mut self.reference {
+            photo.zeroize();
+        }
     }
 
-    /// `String::zeroize`/`Vec::zeroize` wipe the full capacity then clear.
+    /// `String`/`Vec`/`Image` zeroize wipe the bytes then clear the length.
     #[cfg(test)]
     pub(crate) fn is_wiped(&self) -> bool {
-        self.qr_numeric.is_empty() && self.stable_id.is_empty()
+        self.qr_numeric.is_empty()
+            && self.stable_id.is_empty()
+            && self.reference.as_ref().is_none_or(|p| p.rgb().is_empty())
     }
 }
 
@@ -332,6 +400,26 @@ fn dedup_tag(phi: &[u8; 64]) -> [u8; 32] {
     h.update(DEDUP_DOMAIN);
     h.update(phi);
     h.finalize().into()
+}
+
+/// §2 step 12 Gate Z statement value: Φ bound TOGETHER WITH the biometric-match
+/// fact (domain-separated). Both the produce side (the attester quote in
+/// `enroll_steps`) and the verify side ([`registry::InMemoryRegistry::register`])
+/// recompute this and feed it to the attestation report_data binding, so
+/// swapping the fact invalidates the proof — the fact is tamper-evident, not
+/// self-reported. Φ derivation is untouched: the face never enters Φ; this only
+/// binds the already-derived Φ to the public fact.
+pub(crate) fn gate_z_value(phi: &[u8; 64], biometric: &BiometricMatch) -> Vec<u8> {
+    let mut v = Vec::with_capacity(phi.len() + 1 + 3);
+    v.extend_from_slice(phi);
+    v.push(GATE_Z_BIOMETRIC_TAG);
+    v.push(u8::from(biometric.performed));
+    v.push(u8::from(biometric.passed));
+    v.push(match biometric.kind {
+        MatcherKind::Sim => 0,
+        MatcherKind::ArcFaceScrfd => 1,
+    });
+    v
 }
 
 #[cfg(test)]

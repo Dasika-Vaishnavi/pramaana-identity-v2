@@ -2,14 +2,17 @@ use std::sync::{Arc, OnceLock};
 
 use aadhaar_qr::testgen::{self, TestQrSpec};
 use aadhaar_qr::{RsaPrivateKey, RsaPublicKey};
-use attestation::sim::SimVerifier;
-use attestation::{verify_report_data_binding, Verifier};
-use liveness::{decode_jp2, CaptureMetadata, ChallengeNonce, LiveCapture, SimMatcher};
+use attestation::sim::{SimAttester, SimVerifier};
+use attestation::{bind_report_data, verify_report_data_binding, Attester, Verifier};
+use liveness::{decode_jp2, CaptureMetadata, ChallengeNonce, LiveCapture, MatcherKind, SimMatcher};
 use voprf_vault::http::VaultServer;
 use voprf_vault::VoprfVault;
 
-use crate::registry::InMemoryRegistry;
-use crate::{AttestationMode, EnrollError, EnrollmentRequest, EnrollmentTee, HttpVaultClient};
+use crate::registry::{InMemoryRegistry, Registry, RegistryError, GATE_Z_CONTEXT};
+use crate::{
+    gate_z_value, AttestationMode, BiometricMatch, EnrollError, EnrollmentRequest, EnrollmentTee,
+    HttpVaultClient,
+};
 
 fn uidai_keys() -> &'static (RsaPrivateKey, RsaPublicKey) {
     static KEYS: OnceLock<(RsaPrivateKey, RsaPublicKey)> = OnceLock::new();
@@ -84,6 +87,16 @@ fn enroll_happy_path() {
 
     assert!(!out.handle.already_enrolled);
     assert!(out.handle.phi.iter().any(|&b| b != 0));
+    // The attested, non-biometric match fact rides on the handle: performed +
+    // passed, via the sim matcher (the real ArcFace path is the onnx feature).
+    assert_eq!(
+        out.handle.biometric,
+        BiometricMatch {
+            performed: true,
+            passed: true,
+            kind: MatcherKind::Sim
+        }
+    );
     // §3: C receives sk_IdR (ML-KEM-1024 dk) over the attested channel.
     assert_eq!(out.sk_idr.len(), 3168);
     assert_eq!(tee.registry().identity_count(), 1);
@@ -128,10 +141,17 @@ fn pii_erased_after_enroll() {
     let tee = make_tee();
     let mut observed = false;
     let out = tee
-        .enroll_inner(request_for(&TestQrSpec::default()), |scratch| {
+        .enroll_inner(request_for(&TestQrSpec::default()), |scratch, capture| {
+            // §2 step 13: QR + stable_id + the decoded credential photo, AND the
+            // live capture frames, are all wiped before enroll returns. (Face
+            // embeddings are wiped inside the matcher — liveness, C1.)
             assert!(
                 scratch.is_wiped(),
-                "QR numeric + stable_id must be wiped before enroll returns"
+                "QR + stable_id + decoded photo must be wiped before enroll returns"
+            );
+            assert!(
+                capture.frames.iter().all(|f| f.rgb().is_empty()),
+                "live capture frames must be wiped before enroll returns"
             );
             observed = true;
         })
@@ -184,10 +204,13 @@ fn rejections() {
         live_capture: bad_face,
         liveness_nonce: LIVENESS_NONCE,
     };
-    assert!(matches!(
-        tee.enroll(request).unwrap_err(),
-        EnrollError::FaceMismatch { .. }
-    ));
+    // Abort: a failed match mints no Φ, and the error carries the matcher kind
+    // (C3 reconstructs {performed:true, passed:false, kind} from it).
+    let err = tee.enroll(request).unwrap_err();
+    assert!(
+        matches!(err, EnrollError::FaceMismatch { kind: MatcherKind::Sim, .. }),
+        "{err:?}"
+    );
 
     // Wrong liveness nonce echo (replayed capture).
     let mut replayed = matching_capture(&spec);
@@ -203,4 +226,40 @@ fn rejections() {
     ));
 
     assert_eq!(tee.registry().identity_count(), 0);
+}
+
+#[test]
+fn gate_z_binds_biometric_fact() {
+    // The Gate Z statement binds Φ TOGETHER WITH the biometric fact, so a proof
+    // produced for one fact must NOT verify under a tampered fact — the fact is
+    // tamper-evident, not a self-reported flag.
+    let phi = [0x11u8; 64];
+    let dedup = [0x22u8; 32];
+    let honest = BiometricMatch {
+        performed: true,
+        passed: true,
+        kind: MatcherKind::Sim,
+    };
+
+    // Produce the Gate Z quote exactly as enroll_steps does, for `honest`.
+    let proof = SimAttester::default()
+        .quote(&bind_report_data(GATE_Z_CONTEXT, &gate_z_value(&phi, &honest)))
+        .unwrap();
+
+    // The honest fact verifies and records.
+    InMemoryRegistry::default()
+        .register(&phi, &dedup, &honest, &proof)
+        .unwrap();
+
+    // The SAME proof under a TAMPERED fact (passed flipped) is rejected.
+    let tampered = BiometricMatch {
+        passed: false,
+        ..honest
+    };
+    assert!(matches!(
+        InMemoryRegistry::default()
+            .register(&phi, &dedup, &tampered, &proof)
+            .unwrap_err(),
+        RegistryError::GateZRejected(_)
+    ));
 }

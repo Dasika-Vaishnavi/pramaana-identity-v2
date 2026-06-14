@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use ort::session::Session;
 use ort::value::{Tensor, ValueType};
 
-use crate::{Error, FaceMatcher, Image, MatchScore};
+use crate::{Error, FaceMatcher, Image, MatchScore, MatcherKind};
 
 /// Mapped-cosine acceptance threshold, on the same [0, 1] scale as
 /// [`MatchScore`] (raw cosine `c` maps to `(c + 1) / 2`).
@@ -212,6 +212,10 @@ impl FaceMatcher for OnnxMatcher {
             score: ((raw + 1.0) / 2.0).clamp(0.0, 1.0),
             threshold: self.threshold,
         })
+    }
+
+    fn kind(&self) -> MatcherKind {
+        MatcherKind::ArcFaceScrfd
     }
 }
 

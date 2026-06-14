@@ -25,11 +25,14 @@ pub enum RegistryError {
 
 pub trait Registry {
     fn is_seen(&self, dedup_tag: &[u8; 32]) -> Result<bool, RegistryError>;
-    /// §2 step 12: verify the Gate Z proof, and only then record Φ.
+    /// §2 step 12: verify the Gate Z proof — which binds Φ TOGETHER WITH the
+    /// biometric-match fact — and only then record Φ. A tampered `biometric`
+    /// (one the proof did not commit to) fails verification.
     fn register(
         &self,
         phi: &[u8; 64],
         dedup_tag: &[u8; 32],
+        biometric: &crate::BiometricMatch,
         gatez_proof: &[u8],
     ) -> Result<(), RegistryError>;
 }
@@ -61,14 +64,17 @@ impl Registry for InMemoryRegistry {
         &self,
         phi: &[u8; 64],
         dedup_tag: &[u8; 32],
+        biometric: &crate::BiometricMatch,
         gatez_proof: &[u8],
     ) -> Result<(), RegistryError> {
-        // R verifies, and only then records (§2 step 12).
+        // R verifies, and only then records (§2 step 12). The Gate Z statement
+        // binds Φ TOGETHER WITH the biometric fact, so a tampered fact (one the
+        // proof did not commit to) fails the report_data binding here.
         let verified = self
             .verifier
             .verify(gatez_proof)
             .map_err(|e| RegistryError::GateZRejected(e.to_string()))?;
-        verify_report_data_binding(&verified, GATE_Z_CONTEXT, phi)
+        verify_report_data_binding(&verified, GATE_Z_CONTEXT, &crate::gate_z_value(phi, biometric))
             .map_err(|e| RegistryError::GateZRejected(e.to_string()))?;
 
         let mut seen = self.dedup_seen.lock().expect("registry poisoned");
