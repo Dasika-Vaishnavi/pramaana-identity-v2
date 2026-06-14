@@ -2,7 +2,8 @@
  * Locks the unified data-layer contract (see docs/WIRING_MAP.md):
  *  - supabase.from(...) no longer throws and returns empty-but-valid shapes
  *  - functions.invoke("palc-enroll") delegates to PramaanaClient and normalizes
- *    the backend's { phi } into the { phi_hash, timing } shape pages read
+ *    the backend's { phi, timing, set_id, set_index, ... } into the
+ *    { phi_hash, timing, set_id, set_index } shape pages read
  *  - unknown / stubbed functions return gracefully (never throw)
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,7 +54,20 @@ describe("functions.invoke normalization", () => {
   it("maps backend { phi } -> { phi_hash } and surfaces timing for palc-enroll", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
-        JSON.stringify({ phi: "0xabc", phiShort: "0xab…c", alreadyEnrolled: false }),
+        // Full EnrollResult shape the backend returns since W2 (timing + real
+        // on-chain registration coords). The shim reads r.timing.total_ms and
+        // the on-chain fields, so the mock MUST carry them (see pramaana-client.ts).
+        JSON.stringify({
+          phi: "0xabc",
+          phiShort: "0xab…c",
+          alreadyEnrolled: false,
+          timing: { total_ms: 12 },
+          setId: 1,
+          setIndex: 0,
+          txHash: "0xfeed",
+          blockNumber: 4,
+          explorerUrl: null,
+        }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
     );
@@ -66,13 +80,28 @@ describe("functions.invoke normalization", () => {
     expect(data.phi_hash).toBe("0xabc");
     expect(typeof data.timing.total_ms).toBe("number");
     expect(data.pk_size_bytes).toBe(1568);
+    // W2 on-chain registration coords surface through the normalization.
+    expect(data.set_id).toBe(1);
+    expect(data.set_index).toBe(0);
     expect(data.error).toBeUndefined();
   });
 
   it("surfaces a Sybil error when the backend reports alreadyEnrolled", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
-        JSON.stringify({ phi: "0xabc", phiShort: "0xab…c", alreadyEnrolled: true }),
+        // alreadyEnrolled re-enroll (dedup hit): same full EnrollResult shape,
+        // with the PRIOR registration's coords recovered (no second mint).
+        JSON.stringify({
+          phi: "0xabc",
+          phiShort: "0xab…c",
+          alreadyEnrolled: true,
+          timing: { total_ms: 9 },
+          setId: 1,
+          setIndex: 0,
+          txHash: "0xfeed",
+          blockNumber: 4,
+          explorerUrl: null,
+        }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
     );
