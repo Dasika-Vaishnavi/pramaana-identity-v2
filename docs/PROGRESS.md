@@ -19,8 +19,8 @@ V2's React frontend (see `docs/UNIFICATION.md` for reconciliation details).
 | 10 | `GateZVerifier.sol` | V3 | ✅ Sim | 4 Forge | Sim proof = keccak256("pramaana-sim-attestation", Φ). |
 | 11 | `@pramaana/semaphore` | V3 | ✅ Real | 13 vitest | Groth16/BN254, Semaphore v4. Unlinkability tested. |
 | 12 | `@pramaana/sdk` | V3 | ✅ Real | 11 vitest | enroll/prove/verifyOnChain/claim. Gate 0 client-side. |
-| 13 | `@pramaana/app` | V3 | ✅ Real | 3 vitest | Sybil-resistant airdrop demo (headless + interactive). |
-| 14 | `@pramaana/web` | V2→unified | 🚧 Renders; wiring in progress | 1 vitest | 14 React pages, Shadcn/UI, Tailwind, Framer Motion. Renders, but backend wiring is incomplete — see [WIRING_MAP.md](docs/WIRING_MAP.md) (missing `supabase.from()`, ~12 fns routed to `/api/state`, `/api/enroll` ignores QR+liveness). |
+| 13 | `@pramaana/app` | V3 | ✅ Real | 15 vitest | Sybil-resistant airdrop demo (headless + interactive); server endpoints (enroll/prove/verify/registry) + World ID gate exercised by e2e. |
+| 14 | `@pramaana/web` | V2→unified | ✅ Real (crypto pages) | 11 vitest | 14 React pages, Shadcn/UI, Tailwind, Framer Motion. 7 crypto-bearing pages wired to real V3 endpoints via `PramaanaClient` (enroll/prove/verify/registry-reads); NO-CRYPTO-BASIS pages (wallet scanner, multichain, BIP-360, agent, ASC auth) stubbed by design. See [WIRING_MAP.md](docs/WIRING_MAP.md). |
 | 15 | `circuits` | V3 | ❌ Stub | 0 | Gate Z (DCAP-in-ZK) — post-hackathon. |
 
 ## Test Summary
@@ -31,9 +31,9 @@ V2's React frontend (see `docs/UNIFICATION.md` for reconciliation details).
 | Solidity (`forge test`) | 14 (incl. 2 fuzz) | ✅ All passed |
 | Semaphore (vitest) | 13 | ✅ All passed |
 | SDK e2e (vitest) | 11 | ✅ All passed |
-| App e2e (vitest) | 3 | ✅ All passed |
-| Web (vitest) | 1 | ✅ All passed |
-| **Total** | **77** | ✅ **All passed** |
+| App (vitest, incl. e2e) | 15 | ✅ All passed |
+| Web (vitest) | 11 | ✅ All passed |
+| **Total** | **99** | ✅ **All passed** |
 
 ## E2E Pipeline (`make demo`)
 
@@ -49,11 +49,14 @@ V2's React frontend (see `docs/UNIFICATION.md` for reconciliation details).
 
 ## Open Items
 
-- [ ] `circuits` — Gate Z DCAP-in-ZK circuit
-- [ ] Registry.sol on-chain Φ registration wired into SDK enroll path
-- [ ] Φ64→bytes32 mapping pinned at SDK/contracts boundary
+- [x] Registry.sol on-chain Φ registration wired into enroll path (W2; `Registry.register` runs inside `/api/enroll`, Gate Z–gated, `phi32 = keccak256(Φ64)`)
+- [x] Φ64→bytes32 mapping pinned (`keccak256(Φ64)`) at the app/contracts boundary
+- [x] V2 frontend crypto pages wired to V3 backend via `PramaanaClient` — per-page status in [WIRING_MAP.md](docs/WIRING_MAP.md) (NO-CRYPTO-BASIS pages remain stubbed by design)
+- [ ] `circuits` — Gate Z DCAP-in-ZK circuit (real verifier behind `IGateZVerifier`)
+- [ ] `/api/services` service-provider directory endpoint (RegisterService SP list is client-side; metadata only, no crypto)
+- [ ] Web Enroll consumes real scanned QR + liveness (today uses the server sim fixture)
+- [ ] World ID live mode (real `WORLDID_APP_ID` + `RP_SIGNING_KEY` + `@worldcoin/idkit-core`); stub mode otherwise
 - [ ] RA-TLS termination for production TEE deployment
 - [ ] Real UIDAI certificate fixture for aadhaar-qr validation
 - [ ] ONNX face matcher model provisioning
 - [ ] ETHGlobal bounty integrations (see `docs/BOUNTIES.md`)
-- [ ] V2 frontend pages fully wired to V3 backend (Supabase shim → direct SDK calls) — per-page status & gaps tracked in [WIRING_MAP.md](docs/WIRING_MAP.md)
