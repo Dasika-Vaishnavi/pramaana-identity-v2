@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { pramaana, type EnrollmentLogEntry } from "@/lib/pramaana-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,18 +42,6 @@ import {
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
-interface EnrollmentLog {
-  phi_hash: string;
-  palc_hash_ms: number | null;
-  palc_hkdf_ms: number | null;
-  palc_keygen_ms: number | null;
-  palc_encrypt_ms: number | null;
-  palc_total_ms: number | null;
-  on_chain_tx_hash: string | null;
-  on_chain_confirmed: boolean;
-  created_at: string;
-}
-
 interface BenchmarkRun {
   index: number;
   total_ms: number;
@@ -75,16 +63,6 @@ function percentile(sorted: number[], p: number): number {
 
 function median(sorted: number[]): number {
   return percentile(sorted, 50);
-}
-
-function randomPii(): string {
-  const id = Array.from({ length: 10 }, () => Math.random().toString(36)[2]).join("");
-  const year = 1950 + Math.floor(Math.random() * 60);
-  const month = String(Math.floor(Math.random() * 12) + 1).padStart(2, "0");
-  const day = String(Math.floor(Math.random() * 28) + 1).padStart(2, "0");
-  const jurisdictions = ["US", "EU", "IN", "UK", "JP"];
-  const jur = jurisdictions[Math.floor(Math.random() * jurisdictions.length)];
-  return `${id}|${year}-${month}-${day}|${jur}|`;
 }
 
 const fmt = (n: number) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(2) : n.toFixed(1));
@@ -137,21 +115,25 @@ function comparisonRows(avgMs: number | null): SystemRow[] {
 /* ------------------------------------------------------------------ */
 
 const Benchmarks = () => {
-  const [logs, setLogs] = useState<EnrollmentLog[]>([]);
+  const [logs, setLogs] = useState<EnrollmentLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [benchRuns, setBenchRuns] = useState<BenchmarkRun[]>([]);
   const [benchRunning, setBenchRunning] = useState(false);
   const abortRef = useRef(false);
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from("enrollment_logs")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(50);
-    setLogs((data as EnrollmentLog[] | null) ?? []);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      // Real server-measured enroll history (C4). newest-first already.
+      setLogs(await pramaana.enrollmentLog(50));
+    } catch (e) {
+      setLogs([]);
+      setLoadError(e instanceof Error ? e.message : "Backend not reachable");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -159,7 +141,7 @@ const Benchmarks = () => {
   }, [fetchLogs]);
 
   /* ---- Derived stats ---- */
-  const times = logs.map((l) => l.palc_total_ms).filter((t): t is number => t != null).sort((a, b) => a - b);
+  const times = logs.map((l) => l.total_ms).filter((t): t is number => t != null).sort((a, b) => a - b);
   const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : null;
   const med = times.length ? median(times) : null;
   const p95 = times.length ? percentile(times, 95) : null;
@@ -167,10 +149,10 @@ const Benchmarks = () => {
 
   const lineData = [...logs]
     .reverse()
-    .filter((l) => l.palc_total_ms != null)
+    .filter((l) => l.total_ms != null)
     .map((l, i) => ({
       index: i + 1,
-      total_ms: l.palc_total_ms!,
+      total_ms: l.total_ms,
       label: `#${i + 1}`,
     }));
 
@@ -198,17 +180,12 @@ const Benchmarks = () => {
       setBenchRuns([...runs]);
 
       try {
-        const { data, error } = await supabase.functions.invoke("palc-enroll", {
-          body: { pii_input: randomPii() },
-        });
-
-        if (error || data?.error) {
-          runs[i].status = "error";
-          runs[i].total_ms = 0;
-        } else {
-          runs[i].status = "done";
-          runs[i].total_ms = data.timing.total_ms;
-        }
+        // Real enroll round-trip — server-measured total_ms (Decision 1). The
+        // backend enrolls its own fixture, so runs after the first are dedup
+        // hits; each still reports a genuine wall-clock time.
+        const r = await pramaana.enroll();
+        runs[i].status = "done";
+        runs[i].total_ms = r.timing.total_ms;
       } catch {
         runs[i].status = "error";
       }
@@ -286,6 +263,27 @@ const Benchmarks = () => {
         </div>
       ) : (
         <>
+          {/* Backend unreachable */}
+          {loadError && (
+            <Alert className="border-destructive/30 bg-destructive/5">
+              <Info className="h-4 w-4 text-destructive" />
+              <AlertDescription className="text-xs text-destructive">
+                Couldn't load enrollment history: {loadError}. Start the backend (make demo) and retry.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Empty — no enrollments recorded yet */}
+          {!loadError && logs.length === 0 && (
+            <Alert className="border-border/30 bg-muted/10">
+              <Info className="h-4 w-4 text-muted-foreground" />
+              <AlertDescription className="text-xs text-muted-foreground">
+                No enrollments recorded yet. Run the live benchmark below (or enroll an identity) to
+                populate real PALC timings.
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Stat cards */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="Average" value={avg} icon={TrendingUp} />

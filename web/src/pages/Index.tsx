@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { motion, useInView, AnimatePresence } from "framer-motion";
-import { supabase } from "@/integrations/supabase/client";
+import { pramaana } from "@/lib/pramaana-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -141,24 +141,25 @@ const Index = () => {
   // Stepper
   const [expandedStep, setExpandedStep] = useState<string | undefined>(undefined);
 
+  // Live registry counters from the on-chain Registry (C4). Realtime is gone, so
+  // we poll /api/registry/stats every few seconds — the counter animates on change.
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
-      const [c1, c2] = await Promise.all([
-        supabase.from("commitments").select("*", { count: "exact", head: true }),
-        supabase.from("commitments").select("*", { count: "exact", head: true }).not("tx_hash", "is", null),
-      ]);
-      setIdentities(c1.count ?? 0);
-      setOnChain(c2.count ?? 0);
-      setSybilBlocked(3);
+      try {
+        const stats = await pramaana.registryStats();
+        if (cancelled) return;
+        setIdentities(stats.total);
+        setOnChain(stats.onChainConfirmed);
+      } catch {
+        // Backend down — leave counters at their last value (0 on first load).
+      }
     };
     load();
-
-    const channel = supabase
-      .channel("landing-live")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "commitments" }, () => setIdentities((n) => n + 1))
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    // sybilBlocked has no on-chain metric yet; keep it as a static placeholder.
+    setSybilBlocked(3);
+    const id = setInterval(load, 4000);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
   // Carousel auto-advance

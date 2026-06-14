@@ -2,10 +2,11 @@
  * PramaanaClient — the SINGLE client layer for talking to the V3 app server.
  *
  * The V3 backend (tee-server + voprf-vault + anvil, fronted by app/src/server.ts)
- * runs locally and exposes a small JSON API at http://127.0.0.1:8080. This client
- * is the one and only place that issues HTTP to it; the Supabase compatibility
- * shim (web/src/integrations/supabase/client.ts) delegates here and never does its
- * own fetch.
+ * runs locally on :8080 and exposes a small JSON API. In the browser this client
+ * issues RELATIVE `/api/...` requests that Vite proxies to :8080 same-origin (no
+ * CORS); see web/vite.config.ts. It is the one and only place that issues HTTP to
+ * the backend; the Supabase compatibility shim
+ * (web/src/integrations/supabase/client.ts) delegates here and never does its own fetch.
  *
  * The method surface is aligned 1:1 with the routes that ACTUALLY exist in
  * app/src/server.ts:
@@ -120,7 +121,11 @@ export interface EnrollmentLogEntry {
 export class PramaanaClient {
   private baseUrl: string;
 
-  constructor(baseUrl: string = "http://127.0.0.1:8080") {
+  // Default is a RELATIVE base ("") so `/api/...` is same-origin and goes through
+  // the Vite dev proxy (web/vite.config.ts) to the :8080 backend — no CORS needed
+  // (the backend sets no CORS header). Override with VITE_PRAMAANA_API_URL for a
+  // cross-origin deployment that does send CORS.
+  constructor(baseUrl: string = "") {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
@@ -209,7 +214,9 @@ export class PramaanaClient {
   }
 }
 
-/** Singleton instance — the one client layer used across the app. */
+/** Singleton instance — the one client layer used across the app. Relative base
+ *  by default (proxied to :8080 by Vite); set VITE_PRAMAANA_API_URL to point at a
+ *  CORS-enabled backend on another origin. */
 export const pramaana = new PramaanaClient(
-  import.meta.env.VITE_PRAMAANA_API_URL || "http://127.0.0.1:8080",
+  import.meta.env.VITE_PRAMAANA_API_URL ?? "",
 );

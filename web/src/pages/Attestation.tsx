@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
-import { supabase } from "@/integrations/supabase/client";
+import { pramaana } from "@/lib/pramaana-client";
 import {
   ShieldCheck, Download, ArrowLeft, Loader2, Search, Copy, Check,
   FileCheck, Lock, Cpu, Globe,
@@ -15,7 +15,10 @@ import { Separator } from "@/components/ui/separator";
 interface EnrollmentData {
   phi_hash: string;
   palc_total_ms: number | null;
-  created_at: string;
+  created_at: string | null;
+  /** On-chain registration order (null if the Φ isn't registered). */
+  set_index: number | null;
+  tx_hash: string | null;
 }
 
 type PageState =
@@ -40,21 +43,36 @@ const Attestation = () => {
   const [manualPhi, setManualPhi] = useState("");
   const [copied, setCopied] = useState(false);
 
-  const loadAttestation = async (phi: string) => {
+  const loadAttestation = async (phiInput: string) => {
+    const phi = phiInput.trim();
+    if (!phi) return;
     setState({ status: "loading" });
 
-    const { data: log, error } = await supabase
-      .from("enrollment_logs")
-      .select("phi_hash, palc_total_ms, created_at")
-      .eq("phi_hash", phi.trim())
-      .maybeSingle();
-
-    if (error) {
-      setState({ status: "error", message: error.message });
-    } else if (log) {
-      setState({ status: "loaded", data: log });
-    } else {
-      setState({ status: "not_found" });
+    // The enroll-log keys rows by phiShort (server shortHash: first 10 + … + last 6).
+    const short = `${phi.slice(0, 10)}…${phi.slice(-6)}`;
+    try {
+      const [lookup, log] = await Promise.all([
+        pramaana.registryLookup(phi),
+        pramaana.enrollmentLog(50),
+      ]);
+      const entry = log.find((l) => l.phiShort === short);
+      // Found if registered on-chain OR present in the in-memory enroll history.
+      if (!lookup.registered && !entry) {
+        setState({ status: "not_found" });
+        return;
+      }
+      setState({
+        status: "loaded",
+        data: {
+          phi_hash: phi,
+          palc_total_ms: entry?.total_ms ?? null,
+          created_at: entry?.createdAt ?? null,
+          set_index: lookup.setIndex,
+          tx_hash: lookup.txHash,
+        },
+      });
+    } catch (e) {
+      setState({ status: "error", message: e instanceof Error ? e.message : "Backend not reachable" });
     }
   };
 
@@ -80,6 +98,8 @@ const Attestation = () => {
       kdf: "HKDF-SHA3-512 (RFC 5869)",
       enrollment_time_ms: data.palc_total_ms,
       registered_at: data.created_at,
+      on_chain_set_index: data.set_index,
+      on_chain_tx_hash: data.tx_hash,
     },
     security_properties: {
       hiding: { preserved: true, assumption: "MLWE" },
@@ -215,8 +235,10 @@ const Attestation = () => {
               { label: "Kyber Variant", value: "ML-KEM-1024 (NIST FIPS 203)" },
               { label: "Hash Function", value: "SHA3-512" },
               { label: "KDF", value: "HKDF-SHA3-512 (RFC 5869)" },
-              { label: "Enrollment Time", value: data.palc_total_ms ? `${data.palc_total_ms} ms` : "—" },
-              { label: "Registered At", value: format(new Date(data.created_at), "PPpp") },
+              { label: "Enrollment Time", value: data.palc_total_ms != null ? `${data.palc_total_ms} ms` : "—" },
+              { label: "Registered At", value: data.created_at ? format(new Date(data.created_at), "PPpp") : "—" },
+              { label: "On-Chain Set Index", value: data.set_index != null ? `#${data.set_index}` : "—" },
+              { label: "Registration Tx", value: data.tx_hash ? `${data.tx_hash.slice(0, 10)}…` : "—" },
             ].map(({ label, value }) => (
               <div key={label} className="rounded-md border border-border/40 bg-muted/15 px-3 py-2">
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
