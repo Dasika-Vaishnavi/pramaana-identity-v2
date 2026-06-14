@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { Link } from "react-router-dom";
+import { pramaana, type RegistryFeedEntry } from "@/lib/pramaana-client";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   Search, SendHorizonal, FileCode2, Activity, Info, ShieldCheck, ShieldAlert,
-  Hash, ExternalLink, Loader2, CheckCircle2, XCircle, Link as LinkIcon,
+  Hash, ExternalLink, Loader2, XCircle, Link as LinkIcon,
 } from "lucide-react";
 
 const CONTRACT_ADDRESS = "0x898665968B841e241dB19A111e76ECeA20342b86";
@@ -86,25 +87,13 @@ contract PramaanaIdR {
     }
 }`;
 
-interface EventLog {
-  id: string;
-  type: "IdentityRegistered" | "SybilRejected" | "OnChainConfirmed";
-  phiHash: string;
-  timestamp: Date;
-  txHash?: string;
-  blockNumber?: number;
-  setId?: number;
-  setIndex?: number;
-}
-
-interface OnChainResult {
-  tx_hash: string;
-  block_number: number;
-  set_id: number;
-  set_index: number;
-  explorer_url: string;
-  commitment_size_bytes: number;
-  timing: { total_ms: number };
+// Per-Φ lookup result for the isRegistered() panel.
+interface CheckResult {
+  found: boolean;
+  hash: string;
+  setIndex: number | null;
+  txHash: string | null;
+  blockNumber: number | null;
 }
 
 // Minimal Solidity syntax highlighter
@@ -157,129 +146,56 @@ const SolidityHighlighted = ({ code }: { code: string }) => {
 };
 
 const OnChain = () => {
-  const [registerHash, setRegisterHash] = useState("");
   const [checkHash, setCheckHash] = useState("");
   const [totalIdentities, setTotalIdentities] = useState(0);
-  const [events, setEvents] = useState<EventLog[]>([]);
-  const [checkResult, setCheckResult] = useState<{ found: boolean; hash: string; txHash?: string } | null>(null);
-  const [registering, setRegistering] = useState(false);
+  const [events, setEvents] = useState<RegistryFeedEntry[]>([]);
+  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [checking, setChecking] = useState(false);
-  const [recentTx, setRecentTx] = useState<OnChainResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [feedError, setFeedError] = useState<string | null>(null);
 
-  // Load recent on-chain registrations from DB
+  // Real on-chain registry: total from stats, recent Registered events from the
+  // feed (C4). Polled every few seconds since realtime is gone.
   const fetchData = useCallback(async () => {
-    const { count } = await supabase
-      .from("commitments")
-      .select("*", { count: "exact", head: true });
-    setTotalIdentities(count ?? 0);
-
-    // Load recent events from commitments with tx_hash
-    const { data: onChainCommitments } = await supabase
-      .from("commitments")
-      .select("phi_hash, tx_hash, created_at, set_id, set_index")
-      .not("tx_hash", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(20);
-
-    if (onChainCommitments?.length) {
-      const dbEvents: EventLog[] = onChainCommitments.map((c) => ({
-        id: c.phi_hash,
-        type: "OnChainConfirmed" as const,
-        phiHash: c.phi_hash,
-        timestamp: new Date(c.created_at),
-        txHash: c.tx_hash ?? undefined,
-        setId: c.set_id ?? undefined,
-        setIndex: c.set_index,
-      }));
-      setEvents(dbEvents);
+    try {
+      const [stats, feed] = await Promise.all([
+        pramaana.registryStats(),
+        pramaana.registryFeed(20),
+      ]);
+      setTotalIdentities(stats.total);
+      setEvents(feed);
+      setFeedError(null);
+    } catch (e) {
+      setFeedError(e instanceof Error ? e.message : "Backend not reachable");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     fetchData();
+    const id = setInterval(fetchData, 4000);
+    return () => clearInterval(id);
   }, [fetchData]);
 
-  const handleRegister = async () => {
-    const hash = registerHash.trim();
-    if (!hash) return;
-    setRegistering(true);
-    setRecentTx(null);
-
-    try {
-      // Call the register-on-chain edge function
-      const { data, error } = await supabase.functions.invoke("register-on-chain", {
-        body: { phi_hash: hash },
-      });
-
-      if (error) {
-        const body = typeof error === "object" && "context" in error
-          ? await (error as any).context?.json?.()
-          : null;
-        const message = body?.error || data?.error || error.message || "Unknown error";
-
-        if (message.includes("Sybil") || message.includes("already registered")) {
-          setEvents((prev) => [{
-            id: crypto.randomUUID(),
-            type: "SybilRejected",
-            phiHash: hash,
-            timestamp: new Date(),
-          }, ...prev]);
-          toast.error("Sybil attempt rejected", { description: "This identity is already on-chain." });
-        } else if (message.includes("not found") || message.includes("Enroll first")) {
-          toast.error("Commitment not found", { description: "Enroll this identity first via /enroll before registering on-chain." });
-        } else {
-          toast.error("Registration failed", { description: message });
-        }
-        setRegistering(false);
-        return;
-      }
-
-      if (data?.error) {
-        toast.error("Registration failed", { description: data.error });
-        setRegistering(false);
-        return;
-      }
-
-      // Success — real on-chain tx
-      const result = data as OnChainResult;
-      setRecentTx(result);
-      setEvents((prev) => [{
-        id: crypto.randomUUID(),
-        type: "OnChainConfirmed",
-        phiHash: hash,
-        timestamp: new Date(),
-        txHash: result.tx_hash,
-        blockNumber: result.block_number,
-        setId: result.set_id,
-        setIndex: result.set_index,
-      }, ...prev]);
-      setTotalIdentities((n) => n + 1);
-      setRegisterHash("");
-      toast.success("Identity registered on Sepolia", {
-        description: `Block #${result.block_number}`,
-        action: {
-          label: "View on Etherscan",
-          onClick: () => window.open(result.explorer_url, "_blank"),
-        },
-      });
-    } catch (err: any) {
-      toast.error("Network error", { description: err.message });
-    }
-    setRegistering(false);
-  };
-
+  // isRegistered(bytes32) — per-Φ on-chain lookup (C4). The input is the 64-byte
+  // Φ hex from enrollment; the backend hashes it to the on-chain key.
   const handleCheck = async () => {
     const hash = checkHash.trim();
     if (!hash) return;
     setChecking(true);
-
-    const { data } = await supabase
-      .from("commitments")
-      .select("id, tx_hash")
-      .eq("phi_hash", hash)
-      .maybeSingle();
-
-    setCheckResult({ found: !!data, hash, txHash: data?.tx_hash ?? undefined });
+    try {
+      const r = await pramaana.registryLookup(hash);
+      setCheckResult({
+        found: r.registered,
+        hash,
+        setIndex: r.setIndex,
+        txHash: r.txHash,
+        blockNumber: r.blockNumber,
+      });
+    } catch (e) {
+      toast.error("Lookup failed", { description: e instanceof Error ? e.message : "Backend not reachable" });
+    }
     setChecking(false);
   };
 
@@ -332,47 +248,6 @@ const OnChain = () => {
         </CardContent>
       </Card>
 
-      {/* Recent Transaction Detail */}
-      {recentTx && (
-        <Card className="border-green-500/30 bg-green-500/5">
-          <CardContent className="py-5 space-y-4">
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 className="h-5 w-5 text-green-500" />
-              <span className="font-semibold text-foreground">Transaction Confirmed</span>
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {[
-                { label: "Block", value: `#${recentTx.block_number}` },
-                { label: "Set ID", value: recentTx.set_id },
-                { label: "Set Index", value: recentTx.set_index },
-                { label: "Time", value: `${Math.round(recentTx.timing.total_ms / 1000)}s` },
-              ].map(({ label, value }) => (
-                <div key={label} className="rounded-lg border border-border/50 bg-muted/20 p-3 text-center">
-                  <p className="text-xs text-muted-foreground">{label}</p>
-                  <p className="font-mono text-sm font-semibold text-foreground">{value}</p>
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
-              <span className="text-xs text-muted-foreground shrink-0">TX Hash:</span>
-              <code className="flex-1 overflow-hidden text-ellipsis font-mono text-xs text-foreground">
-                {recentTx.tx_hash}
-              </code>
-              <a
-                href={recentTx.explorer_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="shrink-0"
-              >
-                <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs">
-                  Etherscan <ExternalLink className="h-3 w-3" />
-                </Button>
-              </a>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Interactive Panel */}
       <Card className="border-border/50 bg-card/80 backdrop-blur">
         <CardHeader>
@@ -397,33 +272,31 @@ const OnChain = () => {
           </div>
 
           <div className="grid gap-6 md:grid-cols-2">
-            {/* Register Identity */}
+            {/* Register Identity — registration is NOT a standalone action: Φ is
+                derived inside the enrollment TEE and registered there. Disabled,
+                with a pointer to /enroll (no fabricated register endpoint). */}
             <div className="space-y-3">
-              <Label className="text-sm font-medium">register(bytes32, uint256)</Label>
+              <Label className="text-sm font-medium text-muted-foreground">register(bytes32, uint256)</Label>
               <p className="text-xs text-muted-foreground">
-                Submit a phi_hash to register on Sepolia. Must be enrolled first.
+                Registration happens automatically inside enrollment — Φ is derived
+                in the TEE, so there's no standalone register for an external hash.
               </p>
               <div className="flex gap-2">
                 <Input
-                  value={registerHash}
-                  onChange={(e) => setRegisterHash(e.target.value)}
-                  placeholder="Enter φ hash (from enrollment)..."
+                  value=""
+                  disabled
+                  placeholder="Registered during enrollment"
                   className="bg-muted/30 font-mono text-xs"
                 />
-                <Button
-                  onClick={handleRegister}
-                  disabled={!registerHash.trim() || registering}
-                  size="icon"
-                  className="shrink-0"
-                >
-                  {registering ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizonal className="h-4 w-4" />}
+                <Button disabled size="icon" className="shrink-0">
+                  <SendHorizonal className="h-4 w-4" />
                 </Button>
               </div>
-              {registering && (
-                <p className="text-xs text-muted-foreground animate-pulse">
-                  Submitting to Sepolia… waiting for block confirmation (~12s)
-                </p>
-              )}
+              <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs">
+                <Link to="/enroll">
+                  Enroll to register <ExternalLink className="h-3 w-3" />
+                </Link>
+              </Button>
             </div>
 
             {/* Check Registration */}
@@ -454,17 +327,13 @@ const OnChain = () => {
                   {checkResult.found ? (
                     <>
                       <ShieldCheck className="h-4 w-4 text-green-500" />
-                      <span className="text-xs text-green-400">Registered</span>
+                      <span className="text-xs text-green-400">
+                        Registered{checkResult.setIndex != null ? ` · Λ_1 #${checkResult.setIndex}` : ""}
+                      </span>
                       {checkResult.txHash && (
-                        <a
-                          href={`${EXPLORER}/tx/${checkResult.txHash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          <span className="font-mono">{shortHash(checkResult.txHash)}</span>
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
+                        <span className="ml-auto font-mono text-xs text-muted-foreground">
+                          {shortHash(checkResult.txHash)}
+                        </span>
                       )}
                     </>
                   ) : (
@@ -484,46 +353,44 @@ const OnChain = () => {
           <div className="space-y-3">
             <Label className="text-sm font-medium">Transaction Log</Label>
             <ScrollArea className="h-64 rounded-lg border border-border/50 bg-muted/10">
-              {events.length === 0 ? (
+              {loading ? (
                 <div className="flex h-full items-center justify-center p-8">
-                  <p className="text-xs text-muted-foreground/50">No on-chain events yet</p>
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/50" />
+                </div>
+              ) : feedError ? (
+                <div className="flex h-full items-center justify-center p-8 text-center">
+                  <p className="text-xs text-destructive/80">
+                    Couldn't load the registry feed: {feedError}. Start the backend (make demo).
+                  </p>
+                </div>
+              ) : events.length === 0 ? (
+                <div className="flex h-full items-center justify-center p-8">
+                  <p className="text-xs text-muted-foreground/50">
+                    No identities registered yet — enroll one to populate the feed.
+                  </p>
                 </div>
               ) : (
                 <div className="p-3 space-y-1.5">
                   {events.map((evt) => (
                     <div
-                      key={evt.id}
+                      key={evt.phi}
                       className="flex items-center gap-3 rounded-md px-3 py-2.5 font-mono text-xs"
                     >
-                      <Badge
-                        variant={evt.type === "SybilRejected" ? "destructive" : "default"}
-                        className="shrink-0 text-[10px] px-2 py-0.5"
-                      >
-                        {evt.type === "SybilRejected" ? "revert" : "✓ mined"}
+                      <Badge variant="default" className="shrink-0 text-[10px] px-2 py-0.5">
+                        ✓ mined
                       </Badge>
-                      <span className={
-                        evt.type === "SybilRejected"
-                          ? "text-red-400/80"
-                          : "text-green-400/80"
-                      }>
-                        {evt.type === "OnChainConfirmed" ? "IdentityRegistered" : evt.type}
-                      </span>
+                      <span className="text-green-400/80">IdentityRegistered</span>
                       <span className="text-muted-foreground/60 hidden sm:inline">
-                        {shortHash(evt.phiHash)}
+                        {shortHash(evt.phi)}
                       </span>
-                      {evt.txHash && (
-                        <a
-                          href={`${EXPLORER}/tx/${evt.txHash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-auto flex items-center gap-1 text-muted-foreground/50 hover:text-foreground transition-colors"
-                        >
-                          <span className="hidden sm:inline">{shortHash(evt.txHash)}</span>
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                      <span className="text-muted-foreground/40 ml-auto shrink-0">
-                        {evt.timestamp.toLocaleTimeString()}
+                      <span className="text-muted-foreground/50 hidden md:inline">
+                        Λ_1 #{evt.setIndex}
+                      </span>
+                      <span className="ml-auto flex items-center gap-1 text-muted-foreground/50">
+                        <span className="hidden sm:inline">{shortHash(evt.txHash)}</span>
+                      </span>
+                      <span className="text-muted-foreground/40 shrink-0">
+                        blk #{evt.blockNumber}
                       </span>
                     </div>
                   ))}
