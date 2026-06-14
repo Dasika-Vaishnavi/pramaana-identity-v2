@@ -65,6 +65,7 @@ fn request_for(spec: &TestQrSpec) -> EnrollmentRequest {
         qr_numeric: testgen::generate_qr(spec, &uidai_keys().0),
         live_capture: matching_capture(spec),
         liveness_nonce: LIVENESS_NONCE,
+        demo_reference: None,
     }
 }
 
@@ -179,6 +180,7 @@ fn rejections() {
         qr_numeric: testgen::encode_payload(&payload),
         live_capture: matching_capture(&spec),
         liveness_nonce: LIVENESS_NONCE,
+        demo_reference: None,
     };
     assert!(matches!(
         tee.enroll(request).unwrap_err(),
@@ -203,6 +205,7 @@ fn rejections() {
         qr_numeric: testgen::generate_qr(&spec, &uidai_keys().0),
         live_capture: bad_face,
         liveness_nonce: LIVENESS_NONCE,
+        demo_reference: None,
     };
     // Abort: a failed match mints no Φ, and the error carries the matcher kind
     // (C3 reconstructs {performed:true, passed:false, kind} from it).
@@ -219,6 +222,7 @@ fn rejections() {
         qr_numeric: testgen::generate_qr(&spec, &uidai_keys().0),
         live_capture: replayed,
         liveness_nonce: LIVENESS_NONCE,
+        demo_reference: None,
     };
     assert!(matches!(
         tee.enroll(request).unwrap_err(),

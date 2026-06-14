@@ -95,6 +95,11 @@ pub struct EnrollmentRequest {
     pub qr_numeric: String,
     pub live_capture: LiveCapture,
     pub liveness_nonce: ChallengeNonce,
+    /// Optional DEMO reference photo (the user's own face) used as the match
+    /// reference INSTEAD of the QR JP2. SIM/DEMO ONLY — clearly NOT a verified
+    /// credential. `None` ⇒ the real path decodes the credential photo from the
+    /// signature-verified QR. Either way the face never enters Φ derivation.
+    pub demo_reference: Option<Image>,
 }
 
 /// The public, NON-BIOMETRIC fact that an in-enclave live-face ↔ credential-photo
@@ -208,6 +213,7 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
             qr_numeric,
             mut live_capture,
             liveness_nonce,
+            demo_reference,
         } = request;
         let mut scratch = PiiScratch {
             qr_numeric,
@@ -216,10 +222,10 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
         };
 
         // Run all steps, then wipe ALL PII on BOTH success and error paths: the
-        // scratch (QR, stable_id, decoded credential photo) AND the live frames
-        // — explicitly, not just via ZeroizeOnDrop, so the observer sees zeroed
-        // buffers. Embeddings are wiped inside the matcher (liveness, C1).
-        let result = self.enroll_steps(&mut scratch, &live_capture, &liveness_nonce);
+        // scratch (QR, stable_id, decoded/demo reference photo) AND the live
+        // frames — explicitly, not just via ZeroizeOnDrop, so the observer sees
+        // zeroed buffers. Embeddings are wiped inside the matcher (liveness, C1).
+        let result = self.enroll_steps(&mut scratch, &live_capture, &liveness_nonce, demo_reference);
         for frame in &mut live_capture.frames {
             frame.zeroize();
         }
@@ -233,6 +239,7 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
         scratch: &mut PiiScratch,
         capture: &LiveCapture,
         liveness_nonce: &ChallengeNonce,
+        demo_reference: Option<Image>,
     ) -> Result<EnrollmentOutput, EnrollError> {
         // §2 step 5: UIDAI signature verification (never OCR) + extraction.
         let record = aadhaar_qr::parse_and_verify(&scratch.qr_numeric, &self.uidai_pubkey)?;
@@ -241,7 +248,14 @@ impl<M: FaceMatcher, R: Registry> EnrollmentTee<M, R> {
         // match the live face to the QR photo INSIDE the enclave. The decoded
         // photo lives in `scratch` so it is wiped (and observed) before return.
         verify_capture(capture, liveness_nonce)?;
-        scratch.reference = Some(decode_jp2(&record.photo_jp2)?);
+        // DEMO path: an explicit reference photo (the user's own face) replaces
+        // the credential photo for the match ONLY. Φ still derives from the QR
+        // fields below, so the face never enters Φ. Real path: decode the JP2
+        // credential photo from the (signature-verified) QR.
+        scratch.reference = Some(match demo_reference {
+            Some(demo) => demo,
+            None => decode_jp2(&record.photo_jp2)?,
+        });
         let score = {
             let reference = scratch
                 .reference

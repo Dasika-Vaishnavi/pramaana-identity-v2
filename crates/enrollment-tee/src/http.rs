@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::registry::Registry;
-use crate::{EnrollError, EnrollmentRequest, EnrollmentTee};
+use crate::{BiometricMatch, EnrollError, EnrollmentRequest, EnrollmentTee};
 
 #[derive(Deserialize)]
 struct HandshakeRequest {
@@ -59,6 +59,29 @@ struct EnrollRequestJson {
     liveness_nonce: String,
     qr_numeric: String,
     capture: CaptureJson,
+    /// Optional DEMO reference photo (the user's own face). Used as the match
+    /// reference instead of the QR JP2 — SIM/DEMO only, not a verified credential.
+    #[serde(default)]
+    demo_reference: Option<FrameJson>,
+}
+
+/// The public, NON-BIOMETRIC match fact (no frame/photo/embedding bytes).
+#[derive(Serialize)]
+struct BiometricJson {
+    performed: bool,
+    passed: bool,
+    /// "sim" | "arcface-scrfd".
+    kind: String,
+}
+
+impl From<&BiometricMatch> for BiometricJson {
+    fn from(b: &BiometricMatch) -> Self {
+        Self {
+            performed: b.performed,
+            passed: b.passed,
+            kind: b.kind.as_str().to_owned(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -67,6 +90,15 @@ struct EnrollResponseJson {
     dedup_tag: String,
     already_enrolled: bool,
     sk_idr: String,
+    biometric: BiometricJson,
+}
+
+/// REJECT outcome (failed face match): no Φ, no sk_IdR, no biometric bytes —
+/// only the {performed, passed:false, kind} fact, so the UI can render it.
+#[derive(Serialize)]
+struct RejectJson {
+    error: String,
+    biometric: BiometricJson,
 }
 
 #[derive(Serialize)]
@@ -254,6 +286,21 @@ fn enroll_route<M: FaceMatcher, R: Registry>(
         }
     }
 
+    // Optional DEMO reference photo — used as the match reference instead of the
+    // QR JP2 (clearly not a verified credential).
+    let demo_reference = match &parsed.demo_reference {
+        None => None,
+        Some(frame) => {
+            let Ok(rgb) = B64.decode(&frame.rgb_b64) else {
+                return error_body(400, "demo_reference rgb_b64 is not valid base64");
+            };
+            match Image::new(frame.width, frame.height, rgb) {
+                Ok(img) => Some(img),
+                Err(e) => return error_body(400, &format!("bad demo_reference: {e}")),
+            }
+        }
+    };
+
     let enrollment = EnrollmentRequest {
         qr_numeric: parsed.qr_numeric,
         live_capture: LiveCapture {
@@ -264,6 +311,7 @@ fn enroll_route<M: FaceMatcher, R: Registry>(
             },
         },
         liveness_nonce: ChallengeNonce(liveness_nonce),
+        demo_reference,
     };
 
     match service.tee.enroll(enrollment) {
@@ -274,12 +322,27 @@ fn enroll_route<M: FaceMatcher, R: Registry>(
                 dedup_tag: hex::encode(out.handle.dedup_tag),
                 already_enrolled: out.handle.already_enrolled,
                 sk_idr: hex::encode(&*out.sk_idr),
+                biometric: (&out.handle.biometric).into(),
+            })
+            .expect("serialize"),
+        ),
+        // REJECT: a failed face match aborts (no Φ) but is NOT a server error —
+        // return the {performed, passed:false, kind} fact so the UI renders it.
+        Err(EnrollError::FaceMismatch { kind, .. }) => (
+            403,
+            serde_json::to_string(&RejectJson {
+                error: "live face did not match the reference photo".to_owned(),
+                biometric: BiometricJson {
+                    performed: true,
+                    passed: false,
+                    kind: kind.as_str().to_owned(),
+                },
             })
             .expect("serialize"),
         ),
         Err(e) => {
             let status = match e {
-                EnrollError::Qr(_) | EnrollError::Liveness(_) | EnrollError::FaceMismatch { .. } => 403,
+                EnrollError::Qr(_) | EnrollError::Liveness(_) => 403,
                 EnrollError::Vault(_) | EnrollError::GateK(_) => 502,
                 _ => 500,
             };

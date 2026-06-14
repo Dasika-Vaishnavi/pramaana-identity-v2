@@ -67,6 +67,7 @@ describe("functions.invoke normalization", () => {
           txHash: "0xfeed",
           blockNumber: 4,
           explorerUrl: null,
+          biometricMatch: { performed: true, passed: true, kind: "sim" },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
@@ -83,6 +84,8 @@ describe("functions.invoke normalization", () => {
     // W2 on-chain registration coords surface through the normalization.
     expect(data.set_id).toBe(1);
     expect(data.set_index).toBe(0);
+    // C3: the non-biometric match fact flows through (no biometric bytes).
+    expect(data.biometric_match).toEqual({ performed: true, passed: true, kind: "sim" });
     expect(data.error).toBeUndefined();
   });
 
@@ -101,6 +104,7 @@ describe("functions.invoke normalization", () => {
           txHash: "0xfeed",
           blockNumber: 4,
           explorerUrl: null,
+          biometricMatch: { performed: true, passed: true, kind: "sim" },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),

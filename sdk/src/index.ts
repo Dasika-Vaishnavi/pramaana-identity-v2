@@ -18,7 +18,12 @@ import {
   type ServiceProof,
 } from "@pramaana/semaphore";
 import { JsonRpcProvider, type ContractRunner } from "ethers";
-import { TeeClient, type CaptureFrame, type LivenessCapture } from "./tee.js";
+import {
+  TeeClient,
+  type BiometricFact,
+  type CaptureFrame,
+  type LivenessCapture,
+} from "./tee.js";
 
 export {
   AttestationError,
@@ -26,8 +31,8 @@ export {
   verifyReportDataBinding,
   verifySimQuote,
 } from "./attestation.js";
-export { TeeClient, TeeError } from "./tee.js";
-export type { CaptureFrame, LivenessCapture, TeeEnrollment } from "./tee.js";
+export { FaceMismatchError, TeeClient, TeeError } from "./tee.js";
+export type { BiometricFact, CaptureFrame, LivenessCapture, TeeEnrollment } from "./tee.js";
 export type { ServiceProof };
 // §3 off-chain proof primitives, surfaced through the SDK facade so a server can
 // run a standalone Groth16 verify (no on-chain spend) and reconstruct a
@@ -61,6 +66,8 @@ export interface EnrollmentHandle {
   dedupTag: string;
   /** True when dedup returned the EXISTING identity (no second mint). */
   alreadyEnrolled: boolean;
+  /** Attested, non-biometric "live-face ↔ reference-photo match" fact. */
+  biometric: BiometricFact;
 }
 
 export class Pramaana {
@@ -87,13 +94,22 @@ export class Pramaana {
    * the client holds (Φ, sk_IdR) in memory for prove(); T has erased all PII
    * and persists nothing.
    */
-  async enroll(qrNumeric: string, liveness: LivenessCapture): Promise<EnrollmentHandle> {
+  async enroll(
+    qrNumeric: string,
+    liveness: LivenessCapture,
+    demoReference?: CaptureFrame,
+  ): Promise<EnrollmentHandle> {
     const { livenessNonce } = await this.#tee.handshake();
-    const res = await this.#tee.enroll(qrNumeric, liveness, livenessNonce);
+    const res = await this.#tee.enroll(qrNumeric, liveness, livenessNonce, demoReference);
 
     this.#session?.skIdr.fill(0); // overwrite any previous session secret
     this.#session = { phi: hexToBytes(res.phi), skIdr: res.skIdr };
-    return { phi: res.phi, dedupTag: res.dedupTag, alreadyEnrolled: res.alreadyEnrolled };
+    return {
+      phi: res.phi,
+      dedupTag: res.dedupTag,
+      alreadyEnrolled: res.alreadyEnrolled,
+      biometric: res.biometric,
+    };
   }
 
   /** §3: unlinkable per-service proof + nullifier. Requires enroll() first. */

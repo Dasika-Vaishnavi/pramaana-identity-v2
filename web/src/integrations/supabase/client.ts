@@ -106,6 +106,8 @@ async function invokePalcEnroll(): Promise<InvokeResult> {
         pii_retained: false,
         // Real server-measured total only (Decision 1); per-phase fields removed.
         timing: { total_ms: r.timing.total_ms },
+        // C3: the public, non-biometric face-match fact ({performed,passed,kind}).
+        biometric_match: r.biometricMatch,
         palc_properties: { hiding: "", binding: "", uniqueness: "", one_wayness: "" },
         error: r.alreadyEnrolled ? "Sybil collision: identity already enrolled" : undefined,
       },

@@ -28,6 +28,31 @@
  * material or PII.
  */
 
+/** The public, NON-BIOMETRIC face-match fact (no frame/photo/embedding bytes). */
+export interface BiometricFact {
+  performed: boolean;
+  passed: boolean;
+  /** "sim" | "arcface-scrfd". */
+  kind: string;
+}
+
+/** A single RGB8 image as base64, sent to the backend for an in-enclave match. */
+export interface EnrollFrame {
+  width: number;
+  height: number;
+  rgbBase64: string;
+}
+
+/** Optional camera payload for POST /api/enroll. Omit entirely (the default) to
+ *  enroll the server's sim fixture — no camera, used by the public demo + tests. */
+export interface EnrollPayload {
+  /** A live webcam still (matched in-enclave, then wiped; never stored). */
+  liveFrame?: EnrollFrame;
+  /** DEMO reference photo (your own face); NOT a verified credential. */
+  demoReference?: EnrollFrame;
+  capturedAtMs?: number;
+}
+
 /** Response of POST /api/enroll (see app/src/server.ts handleEnroll). */
 export interface EnrollResult {
   phi: string;
@@ -45,6 +70,21 @@ export interface EnrollResult {
   txHash: string | null;
   blockNumber: number | null;
   explorerUrl: string | null;
+  /** The attested, non-biometric "match performed and passed" fact. */
+  biometricMatch: BiometricFact;
+}
+
+/** Thrown by enroll() when the live face did NOT match the reference (HTTP 422):
+ *  enrollment was refused, no Φ minted. Carries the {performed:true,
+ *  passed:false, kind} fact so the UI renders a clean REJECT, not a raw error. */
+export class EnrollRejectedError extends Error {
+  constructor(
+    readonly biometricMatch: BiometricFact,
+    message: string,
+  ) {
+    super(message);
+    this.name = "EnrollRejectedError";
+  }
 }
 
 /** Response of POST /api/claim (see app/src/server.ts handleClaim). */
@@ -98,6 +138,8 @@ export interface RegistryFeedEntry {
   setIndex: number;
   txHash: string;
   blockNumber: number;
+  /** Off-chain match fact joined by Φ (null if unknown to this server). */
+  biometricMatch: BiometricFact | null;
 }
 
 /** Response of GET /api/registry/lookup?phi=<Φ> — whether a Φ is registered. */
@@ -106,6 +148,8 @@ export interface RegistryLookup {
   setIndex: number | null;
   txHash: string | null;
   blockNumber: number | null;
+  /** Off-chain match fact for this Φ (null if unknown / not registered). */
+  biometricMatch: BiometricFact | null;
 }
 
 /** One row of GET /api/enrollment-log — the server's in-memory enroll history. */
@@ -116,6 +160,8 @@ export interface EnrollmentLogEntry {
   txHash: string | null;
   /** ISO-8601 timestamp the enroll was recorded. */
   createdAt: string;
+  /** The non-biometric match fact for this enrollment. */
+  biometricMatch: BiometricFact;
 }
 
 export class PramaanaClient {
@@ -151,8 +197,27 @@ export class PramaanaClient {
    * → erase. The server uses its own sim fixture (QR + face frames); there is no
    * body to send.
    */
-  enroll(): Promise<EnrollResult> {
-    return this.post<EnrollResult>("/api/enroll");
+  async enroll(payload?: EnrollPayload): Promise<EnrollResult> {
+    const res = await fetch(`${this.baseUrl}/api/enroll`, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : undefined,
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    const body = (await res.json().catch(() => ({}))) as Partial<EnrollResult> & {
+      error?: string;
+      biometricMatch?: BiometricFact;
+    };
+    // REJECT (failed live-face match): structured 422, no Φ. Render, don't error.
+    if (res.status === 422 && body.biometricMatch) {
+      throw new EnrollRejectedError(
+        body.biometricMatch,
+        body.error ?? "live face did not match the reference",
+      );
+    }
+    if (!res.ok) {
+      throw new Error(`/api/enroll failed: ${res.status} ${body.error ?? JSON.stringify(body)}`);
+    }
+    return body as EnrollResult;
   }
 
   /**

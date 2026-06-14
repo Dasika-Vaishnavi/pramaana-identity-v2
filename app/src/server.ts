@@ -11,9 +11,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  FaceMismatchError,
   Pramaana,
   MERKLE_DEPTH,
   verifyService,
+  type BiometricFact,
+  type CaptureFrame,
   type ServiceProof,
   type SemaphoreProof,
 } from "@pramaana/sdk";
@@ -150,6 +153,18 @@ export interface EnrollLogEntry {
   setIndex: number | null;
   txHash: string | null;
   createdAt: string;
+  /** The non-biometric match fact for this enrollment (no biometric bytes). */
+  biometricMatch: BiometricFact;
+}
+
+/** POST /api/enroll body (C3). All optional: with no `liveFrame` the server
+ *  uses its sim fixture (default — public demo + tests need no camera). */
+interface EnrollBody {
+  /** A single live webcam still (the tee dups it to meet MIN_FRAMES). */
+  liveFrame?: CaptureFrame;
+  /** DEMO reference photo (the user's own face); NOT a verified credential. */
+  demoReference?: CaptureFrame;
+  capturedAtMs?: number;
 }
 
 /** Build a tx explorer URL ONLY from a configured base (PRAMAANA_EXPLORER_BASE);
@@ -222,18 +237,44 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
   // newest appended last. Like the on-chain Registered stream it backs, this is
   // a ledger, so it deliberately PERSISTS across /api/reset.
   const enrollLog: EnrollLogEntry[] = [];
+  // Off-chain biometric-match fact per Φ, keyed by the on-chain bytes32 key
+  // (lowercased). The chain stores NO biometric; the registry feed/lookup JOIN
+  // this in-memory record so a verifier sees {performed,passed,kind} without the
+  // face. Persists across /api/reset like the ledgers it annotates.
+  const biometricByPhi = new Map<string, BiometricFact>();
 
   function newSession(): Pramaana {
     return new Pramaana({ teeUrl: config.teeUrl, signer: wallet, nullifierRegistryAddress });
   }
 
-  async function handleEnroll(): Promise<unknown> {
-    const { qrNumeric, frames } = await pramaana.fixture();
+  async function handleEnroll(body: unknown): Promise<unknown> {
+    const b = (body ?? {}) as EnrollBody;
+    // Φ always derives from the server's sim fixture QR in this demo. The FACE
+    // match uses the real webcam frame + DEMO reference when the body carries
+    // them; otherwise the fixture's self-matching frames (no camera needed — the
+    // public demo and tests stay green). The face never enters Φ derivation.
+    const fixture = await pramaana.fixture();
+    const frames = b.liveFrame ? [b.liveFrame, b.liveFrame] : fixture.frames;
+
     // Decision 1 (W2): real server-measured total enrollment wall-clock. We can
     // only see the total here — the §2 phases run inside the Rust TEE behind one
     // HTTP round-trip — so there are deliberately no per-phase fields.
     const startedAt = performance.now();
-    const handle = await pramaana.enroll(qrNumeric, { frames, capturedAtMs: Date.now() });
+    let handle;
+    try {
+      handle = await pramaana.enroll(
+        fixture.qrNumeric,
+        { frames, capturedAtMs: b.capturedAtMs ?? Date.now() },
+        b.demoReference,
+      );
+    } catch (e) {
+      // A failed face match is a REJECT, not a server error: surface the
+      // {performed, passed:false, kind} fact (no Φ) in a shape the UI renders.
+      if (e instanceof FaceMismatchError) {
+        throw new HttpError(422, e.message, { biometricMatch: e.biometric });
+      }
+      throw e;
+    }
     const totalMs = Math.round(performance.now() - startedAt);
 
     // §2 step 12: record the Φ commitment on-chain (Gate Z–gated), or — for a
@@ -241,6 +282,9 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     // re-registering. Either way we surface the real on-chain coordinates
     // (Decision 3): set_id, the 0-based set_index, and the tx hash/block.
     const onChain = await recordOnChain(handle.phi, handle.dedupTag, handle.alreadyEnrolled);
+    // Remember the off-chain match fact, keyed by the on-chain Φ key, so the
+    // registry feed/lookup can surface it (the chain stores no biometric).
+    biometricByPhi.set(phi64ToBytes32(handle.phi).toLowerCase(), handle.biometric);
 
     enrollment = { phi: handle.phi, alreadyEnrolled: handle.alreadyEnrolled };
     enrollLog.push({
@@ -249,6 +293,7 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
       setIndex: onChain.setIndex,
       txHash: onChain.txHash,
       createdAt: new Date().toISOString(),
+      biometricMatch: handle.biometric,
     });
     return {
       phi: handle.phi,
@@ -260,6 +305,7 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
       txHash: onChain.txHash,
       blockNumber: onChain.blockNumber,
       explorerUrl: onChain.explorerUrl,
+      biometricMatch: handle.biometric,
     };
   }
 
@@ -361,10 +407,14 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     return { total, onChainConfirmed };
   }
 
-  /** GET /api/registry/feed?limit=N — recent Registered events, newest first. */
+  /** GET /api/registry/feed?limit=N — recent Registered events, newest first,
+   *  each annotated with its off-chain biometricMatch fact (null if unknown). */
   async function registryFeed(req: IncomingMessage): Promise<unknown> {
     const limit = parseLimit(req, 20);
-    return (await listRegistrations()).reverse().slice(0, limit);
+    return (await listRegistrations())
+      .reverse()
+      .slice(0, limit)
+      .map((r) => ({ ...r, biometricMatch: biometricByPhi.get(r.phi.toLowerCase()) ?? null }));
   }
 
   /** GET /api/registry/lookup?phi=<Φ> — is this Φ registered, and where. The
@@ -378,8 +428,14 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
       (r) => r.phi.toLowerCase() === phi32.toLowerCase(),
     );
     return hit
-      ? { registered: true, setIndex: hit.setIndex, txHash: hit.txHash, blockNumber: hit.blockNumber }
-      : { registered: false, setIndex: null, txHash: null, blockNumber: null };
+      ? {
+          registered: true,
+          setIndex: hit.setIndex,
+          txHash: hit.txHash,
+          blockNumber: hit.blockNumber,
+          biometricMatch: biometricByPhi.get(phi32.toLowerCase()) ?? null,
+        }
+      : { registered: false, setIndex: null, txHash: null, blockNumber: null, biometricMatch: null };
   }
 
   /** GET /api/enrollment-log?limit=N — the in-memory enroll history, newest first. */
@@ -512,6 +568,9 @@ class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Extra fields merged into the JSON error body (e.g. biometricMatch on a
+     *  422 REJECT), so the client gets structured detail alongside `error`. */
+    readonly extra?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -539,7 +598,8 @@ function route(req: IncomingMessage, res: ServerResponse, handlers: Record<strin
         sendJson(res, 200, result);
       } catch (e) {
         const status = e instanceof HttpError ? e.status : 500;
-        sendJson(res, status, { error: (e as Error).message });
+        const extra = e instanceof HttpError ? e.extra : undefined;
+        sendJson(res, status, { error: (e as Error).message, ...extra });
       }
     })();
   });
