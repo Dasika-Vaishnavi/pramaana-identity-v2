@@ -65,6 +65,22 @@ export interface AppState {
 /** A World ID proof-of-human payload, as forwarded to /api/claim. */
 export type WorldIdProof = Record<string, unknown>;
 
+/** Response of POST /api/prove — the honest §3 Semaphore proof shape (Decision 2).
+ *  public_inputs are the three real Groth16 public signals; merkle_path is empty
+ *  and binding_commitment null by construction (see zk_note). This whole object
+ *  is what POST /api/verify consumes. */
+export interface ProveResult {
+  proof_type: "groth16";
+  zk_note: string;
+  public_inputs: { merkle_root: string; nullifier: string; external_nullifier: string };
+  proof: { points: string[]; merkle_path: never[]; binding_commitment: null };
+}
+
+/** Response of POST /api/verify — the real off-chain Groth16 verdict. */
+export interface VerifyResult {
+  verified: boolean;
+}
+
 /** Response of GET /api/registry/stats — counts straight from the on-chain R. */
 export interface RegistryStats {
   /** identityCount() storage var. */
@@ -145,6 +161,21 @@ export class PramaanaClient {
   /** Get the current application state (enrollment status, past claims). */
   getState(): Promise<AppState> {
     return this.get<AppState>("/api/state");
+  }
+
+  /**
+   * Produce a standalone §3 Semaphore membership proof for a service. Unlike
+   * claim() this does NOT require a World ID proof and does NOT spend the
+   * nullifier on-chain — it only generates the proof. The server session owns
+   * (Φ, sk_IdR); there is no client secret to pass.
+   */
+  prove(serviceId: string): Promise<ProveResult> {
+    return this.post<ProveResult>("/api/prove", { service: serviceId });
+  }
+
+  /** Verify a proof object (as returned by prove()) with real off-chain Groth16. */
+  verify(proof: ProveResult): Promise<VerifyResult> {
+    return this.post<VerifyResult>("/api/verify", proof);
   }
 
   /** Fetch a World ID challenge for a given service action. */

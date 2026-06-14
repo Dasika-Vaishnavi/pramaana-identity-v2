@@ -10,7 +10,13 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Pramaana, type ServiceProof } from "@pramaana/sdk";
+import {
+  Pramaana,
+  MERKLE_DEPTH,
+  verifyService,
+  type ServiceProof,
+  type SemaphoreProof,
+} from "@pramaana/sdk";
 import {
   ContractFactory,
   JsonRpcProvider,
@@ -104,6 +110,26 @@ export interface RegistrationInfo {
   txHash: string | null;
   blockNumber: number | null;
   explorerUrl: string | null;
+}
+
+/** Honest description of the Semaphore proof shape (Decision 2). Explains WHY
+ *  merkle_path is empty and binding_commitment is null, so the UI never implies
+ *  fields that don't exist at this layer. */
+const ZK_NOTE =
+  "Real Groth16/BN254 Semaphore membership proof (@semaphore-protocol/core v4). " +
+  "Merkle membership is proven succinctly inside the circuit, so there is no exposed " +
+  "merkle_path and no separate PALC binding_commitment at this layer — the public inputs " +
+  "(merkle_root, nullifier, external_nullifier) are the full statement. /api/verify runs " +
+  "the actual off-chain Groth16 check over these inputs and the proof points.";
+
+/** The honest §3 proof shape /api/prove emits and /api/verify consumes
+ *  (Decision 2). public_inputs are exactly the three real Groth16 public signals;
+ *  merkle_path is [] and binding_commitment is null by construction. */
+export interface ProveResponse {
+  proof_type: "groth16";
+  zk_note: string;
+  public_inputs: { merkle_root: string; nullifier: string; external_nullifier: string };
+  proof: { points: string[]; merkle_path: never[]; binding_commitment: null };
 }
 
 /** One Registered event from R, with its 0-based ordinal (= setIndex). The
@@ -411,6 +437,30 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
     return record;
   }
 
+  /**
+   * POST /api/prove — a standalone §3 Semaphore membership proof. Unlike
+   * /api/claim this does NOT require a worldIdProof and does NOT spend the
+   * nullifier on-chain — it only produces the proof. The V3 session owns
+   * (Φ, sk_IdR) internally, so any client-passed master_secret_key is ignored:
+   * there is no per-request client secret in this model.
+   */
+  async function handleProve(body: unknown): Promise<ProveResponse> {
+    if (!enrollment) throw new HttpError(400, "enroll first");
+    const service = parseService(body);
+    const sp = await pramaana.prove(service);
+    const p = sp.proof;
+    return {
+      proof_type: "groth16",
+      zk_note: ZK_NOTE,
+      public_inputs: {
+        merkle_root: p.merkleTreeRoot,
+        nullifier: p.nullifier,
+        external_nullifier: p.scope,
+      },
+      proof: { points: [...p.points], merkle_path: [], binding_commitment: null },
+    };
+  }
+
   async function handleChallenge(req: IncomingMessage): Promise<unknown> {
     const service = new URL(req.url ?? "", "http://x").searchParams.get("service");
     if (!SERVICES.includes(service as ServiceId)) {
@@ -434,6 +484,8 @@ export async function createDemoServer(config: DemoServerConfig): Promise<DemoSe
       "POST /api/enroll": handleEnroll,
       "POST /api/claim": async (body) =>
         handleClaim(parseService(body), (body as { worldIdProof?: WorldIdProof }).worldIdProof),
+      "POST /api/prove": handleProve,
+      "POST /api/verify": verifyProvePayload,
       "GET /api/worldid/challenge": async () => handleChallenge(req),
       "GET /api/state": async () => state(),
       "GET /api/registry/stats": async () => registryStats(),
@@ -508,6 +560,39 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   } catch {
     sendJson(res, 404, { error: "not found" });
   }
+}
+
+/**
+ * POST /api/verify — verify a proof emitted by /api/prove with the real
+ * off-chain Groth16 check. Reconstructs a ServiceProof from the honest payload
+ * (pinned MERKLE_DEPTH, default message 0 — the constants prove uses) and runs
+ * verifyService over the exact points + public inputs the prove call produced.
+ * It verifies that artifact; it never re-proves.
+ */
+async function verifyProvePayload(body: unknown): Promise<{ verified: boolean }> {
+  const b = body as Partial<ProveResponse>;
+  const pi = b?.public_inputs;
+  const points = b?.proof?.points;
+  if (!pi?.merkle_root || !pi?.nullifier || !pi?.external_nullifier || !Array.isArray(points)) {
+    throw new HttpError(
+      400,
+      "malformed proof: need public_inputs.{merkle_root,nullifier,external_nullifier} + proof.points",
+    );
+  }
+  const proof: SemaphoreProof = {
+    merkleTreeDepth: MERKLE_DEPTH,
+    merkleTreeRoot: pi.merkle_root,
+    message: "0",
+    nullifier: pi.nullifier,
+    scope: pi.external_nullifier,
+    points: points as SemaphoreProof["points"],
+  };
+  const serviceProof: ServiceProof = {
+    proof,
+    scope: BigInt(pi.external_nullifier),
+    nullifier: BigInt(pi.nullifier),
+  };
+  return { verified: await verifyService(serviceProof) };
 }
 
 /** Parse a positive integer `limit` query param, falling back when absent/bad. */

@@ -29,6 +29,11 @@ export {
 export { TeeClient, TeeError } from "./tee.js";
 export type { CaptureFrame, LivenessCapture, TeeEnrollment } from "./tee.js";
 export type { ServiceProof };
+// §3 off-chain proof primitives, surfaced through the SDK facade so a server can
+// run a standalone Groth16 verify (no on-chain spend) and reconstruct a
+// ServiceProof at the pinned Merkle depth.
+export { MERKLE_DEPTH, verifyService } from "@pramaana/semaphore";
+export type { SemaphoreProof } from "@pramaana/semaphore";
 
 export interface PramaanaConfig {
   /** Enrollment TEE base URL (T). */
