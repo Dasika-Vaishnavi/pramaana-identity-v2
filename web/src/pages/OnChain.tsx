@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { EnsAddress } from "@/components/EnsAddress";
 import {
   Search, SendHorizonal, FileCode2, Activity, Info, ShieldCheck, ShieldAlert,
   Hash, ExternalLink, Loader2, XCircle, Link as LinkIcon,
@@ -224,7 +225,7 @@ const OnChain = () => {
             className="flex items-center gap-1.5 hover:text-foreground transition-colors"
           >
             <LinkIcon className="h-3 w-3" />
-            <span className="font-mono">{CONTRACT_ADDRESS.slice(0, 6)}…{CONTRACT_ADDRESS.slice(-4)}</span>
+            <EnsAddress address={CONTRACT_ADDRESS} className="text-xs" />
             <ExternalLink className="h-3 w-3" />
           </a>
           <span>Chain ID: {CHAIN_ID}</span>

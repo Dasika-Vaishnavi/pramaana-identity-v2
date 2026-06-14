@@ -18,6 +18,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import { VerificationBadge } from "@/components/VerificationBadge";
 
 // ── Hex/Crypto helpers (browser-side, matching edge function logic) ─────────
 
@@ -634,9 +635,10 @@ const Verify = () => (
     <div className="text-center">
       <h1 className="text-3xl font-bold text-foreground">Verify Identity</h1>
       <p className="mt-2 text-muted-foreground">
-        Query the registry, authenticate with pseudonyms, and test Sybil resistance.
+        Verify a human by ENS name, query the registry, and test Sybil resistance.
       </p>
     </div>
+    <VerificationBadge />
     <CheckIdentity />
     <Dashboard />
     <SybilDemo />
