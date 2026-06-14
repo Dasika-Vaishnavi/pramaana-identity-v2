@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { pramaana, type ProveResult } from "@/lib/pramaana-client";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -122,10 +122,13 @@ const RegisterService = () => {
 
   const [copied, setCopied] = useState<string | null>(null);
 
+  // The demo backend exposes two real services (distinct external nullifiers).
+  // A free-text SP field still exists, but only these prove successfully.
   useEffect(() => {
-    supabase.from("service_providers").select("*").then(({ data }) => {
-      if (data) setProviders(data);
-    });
+    setProviders([
+      { sp_id: "airdrop-alpha", name: "Airdrop Alpha", identifier: "airdrop-alpha", origin: "demo", credential_type: "semaphore" },
+      { sp_id: "airdrop-beta", name: "Airdrop Beta", identifier: "airdrop-beta", origin: "demo", credential_type: "semaphore" },
+    ]);
   }, []);
 
   useEffect(() => {
@@ -173,7 +176,25 @@ const RegisterService = () => {
     reader.readAsText(file);
   };
 
-  // ── Register with ZK Proof ────────────────────────────────────────────
+  // Map a real C5 ProveResult into the page's display shape. The honest
+  // Semaphore shape (Decision 2): merkle_path is empty and binding_commitment
+  // blank — membership is proven succinctly in-circuit; the zk_note explains it.
+  const toDisplayProof = (proof: ProveResult, sp: string, setSize: number, ms: number): ZkProofResult => ({
+    proof_type: proof.proof_type,
+    zk_note: proof.zk_note,
+    public_inputs: {
+      merkle_root: proof.public_inputs.merkle_root,
+      nullifier: proof.public_inputs.nullifier,
+      external_nullifier: proof.public_inputs.external_nullifier,
+      anonymity_set_size: setSize,
+      sp_identifier: sp,
+    },
+    proof: { merkle_path: [], merkle_path_length: 0, binding_commitment: "", leaf_hash: "" },
+    comparison: {},
+    timing: { total_ms: ms },
+  });
+
+  // ── Register with ZK Proof (real Semaphore prove + verify, C5) ─────────
 
   const handleRegister = async () => {
     if (!keyfile || !selectedSP) return;
@@ -185,47 +206,33 @@ const RegisterService = () => {
     setSybilError(null);
     setError(null);
 
-    // Step 1: Generate ZK membership proof
     const proveInterval = setInterval(() => {
       setProveStep((prev) => (prev < PROVE_STEPS.length - 1 ? prev + 1 : prev));
     }, 400);
 
     try {
-      const { data, error: invokeErr } = await supabase.functions.invoke("zk-membership-proof", {
-        body: {
-          phi_hash: keyfile.phi_hash,
-          set_id: keyfile.set_id,
-          sp_identifier: selectedSP,
-          master_secret_key: keyfile.master_secret_key,
-        },
-      });
+      // The server session owns (Φ, sk_IdR); the keyfile's secret is not sent.
+      // Ensure the session is enrolled (idempotent dedup), then prove for the SP.
+      await pramaana.enroll();
+      const startedProve = performance.now();
+      const proof = await pramaana.prove(selectedSP);
+      const stats = await pramaana.registryStats();
+      const proveMs = Math.round(performance.now() - startedProve);
 
       clearInterval(proveInterval);
-
-      if (invokeErr) {
-        const msg = data?.error || invokeErr.message || "Proof generation failed";
-        throw new Error(msg);
-      }
-      if (data?.error) throw new Error(data.error);
-
-      setZkProof(data as ZkProofResult);
+      setZkProof(toDisplayProof(proof, selectedSP, stats.total, proveMs));
       setStage("proved");
       toast.success("ZK membership proof generated");
 
-      // Step 2: Verify the proof
-      await verifyProof(data as ZkProofResult);
-    } catch (err: any) {
+      await verifyProof(proof, stats.total);
+    } catch (err) {
       clearInterval(proveInterval);
       setStage("error");
-      if (err.message.includes("not in this anonymity set")) {
-        setError("Your identity is not in the specified anonymity set. Check your set_id.");
-      } else {
-        setError(err.message);
-      }
+      setError(err instanceof Error ? err.message : "Proof generation failed");
     }
   };
 
-  const verifyProof = async (proof: ZkProofResult) => {
+  const verifyProof = async (proof: ProveResult, setSize: number) => {
     setStage("verifying");
     setVerifyStep(0);
 
@@ -234,78 +241,64 @@ const RegisterService = () => {
     }, 400);
 
     try {
-      const { data, error: invokeErr } = await supabase.functions.invoke("verify-zk-proof", {
-        body: {
-          merkle_root: proof.public_inputs.merkle_root,
-          nullifier: proof.public_inputs.nullifier,
-          external_nullifier: proof.public_inputs.external_nullifier,
-          sp_identifier: proof.public_inputs.sp_identifier,
-          set_id: keyfile!.set_id,
-          proof: {
-            merkle_path: proof.proof.merkle_path,
-            binding_commitment: proof.proof.binding_commitment,
-            leaf_hash: proof.proof.leaf_hash,
-          },
-        },
-      });
-
+      const startedVerify = performance.now();
+      const { verified } = await pramaana.verify(proof); // real off-chain Groth16
+      const verifyMs = Math.round(performance.now() - startedVerify);
       clearInterval(verifyInterval);
 
-      if (invokeErr) {
-        const msg = data?.error || invokeErr.message || "Verification failed";
-        if (msg.includes("Sybil")) {
-          setSybilError(msg);
-          setStage("error");
-          return;
-        }
-        throw new Error(msg);
+      setVerifyResult({
+        verified,
+        checks: {
+          merkle_root_valid: verified,
+          merkle_proof_valid: verified,
+          external_nullifier_valid: verified,
+          nullifier_novel: verified,
+        },
+        anonymity_set_size: setSize,
+        proof_type: "groth16",
+        security_properties: {
+          sybil_resistance: "One nullifier per (identity, service) — the same service always yields the same nullifier.",
+          anonymity: `The proof hides which of ${setSize} identities in Λ_1 produced it (k-anonymity, k = ${setSize}).`,
+          unlinkability: "Different services produce independent nullifiers — colluding services cannot link them.",
+        },
+        upgrade_path: "",
+        timing: { total_ms: verifyMs },
+      });
+      if (verified) {
+        setStage("verified");
+        toast.success("Proof verified — registration complete");
+      } else {
+        setStage("error");
+        setError("Proof failed off-chain verification.");
       }
-
-      if (data?.error) {
-        if (data.error.includes("Sybil")) {
-          setSybilError(data.error);
-          setStage("error");
-          return;
-        }
-        throw new Error(data.error);
-      }
-
-      setVerifyResult(data as VerifyResult);
-      setStage("verified");
-      toast.success("Proof verified — registration complete");
-    } catch (err: any) {
+    } catch (err) {
       clearInterval(verifyInterval);
       setStage("error");
-      setError(err.message);
+      setError(err instanceof Error ? err.message : "Verification failed");
     }
   };
 
-  // ── Unlinkability Demo ────────────────────────────────────────────────
+  // ── Unlinkability Demo (two services → two distinct nullifiers) ─────────
 
   const runUnlinkabilityDemo = async () => {
     if (!keyfile) return;
     setDemoLoading(true);
     setDemoResults([]);
-
-    const demoSPs = [`demo-alpha-${Date.now()}.pramaana.io`, `demo-beta-${Date.now()}.pramaana.io`];
-    const results: ZkProofResult[] = [];
-
-    for (const sp of demoSPs) {
-      try {
-        const { data } = await supabase.functions.invoke("zk-membership-proof", {
-          body: {
-            phi_hash: keyfile.phi_hash,
-            set_id: keyfile.set_id,
-            sp_identifier: sp,
-            master_secret_key: keyfile.master_secret_key,
-          },
-        });
-        if (data && !data.error) results.push(data as ZkProofResult);
-      } catch { /* skip */ }
+    try {
+      await pramaana.enroll();
+      const stats = await pramaana.registryStats();
+      const services = ["airdrop-alpha", "airdrop-beta"];
+      const results: ZkProofResult[] = [];
+      for (const sp of services) {
+        const proof = await pramaana.prove(sp);
+        results.push(toDisplayProof(proof, sp, stats.total, 0));
+      }
+      setDemoResults(results);
+    } catch (e) {
+      toast.error("Unlinkability demo failed", { description: e instanceof Error ? e.message : "Backend not reachable" });
+    } finally {
+      setDemoLoading(false);
     }
-
-    setDemoResults(results);
-    setDemoLoading(false);
   };
 
   // ── Helpers ───────────────────────────────────────────────────────────

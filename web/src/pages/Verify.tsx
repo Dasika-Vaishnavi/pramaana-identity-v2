@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { format } from "date-fns";
-import { supabase } from "@/integrations/supabase/client";
+import { pramaana, type EnrollmentLogEntry } from "@/lib/pramaana-client";
 import { cn } from "@/lib/utils";
 import {
   Search, ShieldCheck, ShieldX, ShieldAlert, Users, Clock, Activity,
@@ -39,7 +40,7 @@ function fromHex(hex: string): Uint8Array {
 type LookupState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "found"; created_at: string }
+  | { status: "found"; setIndex: number | null; txHash: string | null }
   | { status: "not_found" }
   | { status: "error"; message: string };
 
@@ -50,18 +51,16 @@ function CheckIdentity() {
   const handleCheck = async () => {
     if (!phiInput.trim()) return;
     setState({ status: "loading" });
-    const { data, error } = await supabase
-      .from("commitments")
-      .select("created_at")
-      .eq("phi_hash", phiInput.trim())
-      .maybeSingle();
-
-    if (error) {
-      setState({ status: "error", message: error.message });
-    } else if (data) {
-      setState({ status: "found", created_at: data.created_at });
-    } else {
-      setState({ status: "not_found" });
+    try {
+      // Per-Φ on-chain lookup (C4). Input is the 64-byte Φ hex from enrollment.
+      const r = await pramaana.registryLookup(phiInput.trim());
+      if (r.registered) {
+        setState({ status: "found", setIndex: r.setIndex, txHash: r.txHash });
+      } else {
+        setState({ status: "not_found" });
+      }
+    } catch (e) {
+      setState({ status: "error", message: e instanceof Error ? e.message : "Backend not reachable" });
     }
   };
 
@@ -92,7 +91,9 @@ function CheckIdentity() {
             <ShieldCheck className="h-4 w-4 text-green-500" />
             <AlertTitle className="text-green-400">Identity Found</AlertTitle>
             <AlertDescription className="text-sm text-green-200/70">
-              Registered at {format(new Date(state.created_at), "PPpp")}
+              Registered on-chain in anonymity set Λ_1
+              {state.setIndex != null ? ` at position #${state.setIndex}` : ""}
+              {state.txHash ? ` · tx ${state.txHash.slice(0, 10)}…` : ""}
             </AlertDescription>
           </Alert>
         )}
@@ -124,54 +125,37 @@ interface Stats {
   latestEnrollment: string | null;
 }
 
-interface RecentEnrollment {
-  phi_hash: string;
-  palc_total_ms: number | null;
-  created_at: string;
-}
-
 function Dashboard() {
   const [stats, setStats] = useState<Stats>({ totalIdentities: 0, avgEnrollmentMs: 0, latestEnrollment: null });
-  const [recent, setRecent] = useState<RecentEnrollment[]>([]);
+  const [recent, setRecent] = useState<EnrollmentLogEntry[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const fetchData = async () => {
-    const { count } = await supabase
-      .from("commitments")
-      .select("*", { count: "exact", head: true });
-
-    const { data: logs } = await supabase
-      .from("enrollment_logs")
-      .select("phi_hash, palc_total_ms, created_at")
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    const allLogs = logs || [];
-    const validTimes = allLogs.filter((l) => l.palc_total_ms != null);
-    const avgMs = validTimes.length > 0
-      ? validTimes.reduce((s, l) => s + (l.palc_total_ms ?? 0), 0) / validTimes.length
-      : 0;
-
-    setStats({
-      totalIdentities: count || 0,
-      avgEnrollmentMs: Math.round(avgMs * 100) / 100,
-      latestEnrollment: allLogs[0]?.created_at || null,
-    });
-    setRecent(allLogs);
-  };
+  const fetchData = useCallback(async () => {
+    try {
+      const [registry, logs] = await Promise.all([
+        pramaana.registryStats(),
+        pramaana.enrollmentLog(10),
+      ]);
+      const validTimes = logs.filter((l) => l.total_ms != null);
+      const avgMs = validTimes.length > 0
+        ? validTimes.reduce((s, l) => s + l.total_ms, 0) / validTimes.length
+        : 0;
+      setStats({
+        totalIdentities: registry.total,
+        avgEnrollmentMs: Math.round(avgMs * 100) / 100,
+        latestEnrollment: logs[0]?.createdAt ?? null,
+      });
+      setRecent(logs);
+    } catch {
+      // Backend down — keep last values; the page still renders.
+    }
+  }, []);
 
   useEffect(() => {
     fetchData();
-    const channel = supabase
-      .channel("enrollment-updates")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "commitments" },
-        () => { fetchData(); }
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, []);
+    const id = setInterval(fetchData, 4000); // poll (realtime is gone)
+    return () => clearInterval(id);
+  }, [fetchData]);
 
   const copyHash = async (hash: string) => {
     await navigator.clipboard.writeText(hash);
@@ -222,26 +206,26 @@ function Dashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recent.map((row) => (
-                  <TableRow key={row.phi_hash} className="group">
+                {recent.map((row, i) => (
+                  <TableRow key={`${row.phiShort}-${i}`} className="group">
                     <TableCell className="font-mono text-xs">
                       <span className="flex items-center gap-1.5">
-                        {row.phi_hash.slice(0, 16)}...{row.phi_hash.slice(-8)}
+                        {row.phiShort}
                         <button
-                          onClick={() => copyHash(row.phi_hash)}
+                          onClick={() => copyHash(row.phiShort)}
                           className="opacity-0 transition-opacity group-hover:opacity-100"
                         >
-                          {copied === row.phi_hash
+                          {copied === row.phiShort
                             ? <Check className="h-3 w-3 text-green-500" />
                             : <Copy className="h-3 w-3 text-muted-foreground" />}
                         </button>
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">
-                      {row.palc_total_ms ?? "—"}
+                      {row.total_ms ?? "—"}
                     </TableCell>
                     <TableCell className="text-right text-xs text-muted-foreground">
-                      {format(new Date(row.created_at), "MMM d, HH:mm")}
+                      {format(new Date(row.createdAt), "MMM d, HH:mm")}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -272,30 +256,13 @@ function SybilDemo() {
 
   const attemptReenroll = async () => {
     setState({ status: "loading" });
-    const pii_input = `${DEMO_PII.govId}|${DEMO_PII.dob}|${DEMO_PII.jurisdiction}|${DEMO_PII.biometric}`;
-
     try {
-      const { data, error } = await supabase.functions.invoke("palc-enroll", {
-        body: { pii_input },
-      });
-
-      if (error) {
-        const message = data?.error || error.message || "";
-        if (message.includes("Sybil")) {
-          setState({ status: "rejected" });
-        } else {
-          setState({ status: "unexpected_success" });
-        }
-        return;
-      }
-
-      if (data?.error?.includes("Sybil")) {
-        setState({ status: "rejected" });
-      } else {
-        setState({ status: "unexpected_success" });
-      }
-    } catch (err: any) {
-      setState({ status: "error", message: err.message });
+      // Re-enroll the same fixture identity. The backend signals a dedup hit with
+      // alreadyEnrolled:true (the REAL Sybil block) — no error-string sniffing.
+      const r = await pramaana.enroll();
+      setState({ status: r.alreadyEnrolled ? "rejected" : "unexpected_success" });
+    } catch (err) {
+      setState({ status: "error", message: err instanceof Error ? err.message : "Backend not reachable" });
     }
   };
 
@@ -404,153 +371,19 @@ function ASCAuthDemo() {
   const [availablePhiHashes, setAvailablePhiHashes] = useState<string[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
 
-  // Load available phi_hashes on mount
-  useEffect(() => {
-    supabase
-      .from("commitments")
-      .select("phi_hash")
-      .eq("set_id", 1)
-      .limit(5)
-      .then(({ data }) => {
-        if (data && data.length > 0) {
-          setAvailablePhiHashes(data.map((d) => d.phi_hash));
-          if (!phiHash) setPhiHash(data[0].phi_hash);
-        }
-      });
-  }, []);
-
+  // U2SSO Schnorr login has NO V3 backend: personhood in V3 is the Semaphore
+  // nullifier-spend (demoed on /register-service and the Dashboard), not a
+  // per-SP Schnorr challenge/response. This flow is left disabled rather than
+  // wired to fabricated endpoints — see the note in the card body. The handlers
+  // are inert no-ops; the action buttons are disabled.
   const copyValue = async (val: string) => {
     await navigator.clipboard.writeText(val);
     setCopied(val);
     setTimeout(() => setCopied(null), 2000);
   };
-
-  // Step 1: Register pseudonym via asc-prove
-  const handleRegister = async () => {
-    if (!phiHash || !spInput) return;
-    setState({ step: "registering" });
-
-    // Generate deterministic demo keys
-    const masterKey = toHex(crypto.getRandomValues(new Uint8Array(32)));
-    const randomR = toHex(crypto.getRandomValues(new Uint8Array(32)));
-
-    try {
-      const { data, error } = await supabase.functions.invoke("asc-prove", {
-        body: {
-          master_secret_key: masterKey,
-          phi_hash: phiHash,
-          set_id: 1,
-          sp_identifier: spInput,
-          random_material_r: randomR,
-        },
-      });
-
-      if (error) throw new Error(data?.error || error.message);
-      if (data?.error) throw new Error(data.error);
-
-      setState({
-        step: "registered",
-        pseudonym: data.pseudonym,
-        nullifier: data.nullifier,
-        sp_identifier: spInput,
-        set_id: data.set_id,
-        masterKey,
-        randomR,
-      });
-    } catch (err: any) {
-      setState({ step: "error", error: err.message });
-    }
-  };
-
-  // Step 2: Request challenge from authenticate
-  const handleRequestChallenge = async () => {
-    if (!state.pseudonym || !state.sp_identifier) return;
-    setState((s) => ({ ...s, step: "challenging" }));
-
-    try {
-      const { data, error } = await supabase.functions.invoke("authenticate", {
-        body: {
-          action: "challenge",
-          sp_identifier: state.sp_identifier,
-          pseudonym: state.pseudonym,
-        },
-      });
-
-      if (error) throw new Error(data?.error || error.message);
-      if (data?.error) throw new Error(data.error);
-
-      setState((s) => ({ ...s, step: "challenged", challenge: data.challenge }));
-    } catch (err: any) {
-      setState((s) => ({ ...s, step: "error", error: err.message }));
-    }
-  };
-
-  // Step 3: Sign challenge and submit
-  const handleSignAndVerify = async () => {
-    if (!state.challenge || !state.pseudonym || !state.masterKey || !state.randomR || !state.sp_identifier) return;
-    setState((s) => ({ ...s, step: "signing" }));
-
-    try {
-      // We need to reconstruct csk_l to sign the challenge.
-      // Import the same HKDF + secp256k1 logic client-side is complex,
-      // so we call a helper approach: have the edge function do the signing for the demo.
-      // In production, this would happen entirely on the user's device.
-
-      // For the demo, we'll call asc-prove's signing logic via a dedicated sign endpoint.
-      // Since we don't have one, we simulate by computing a Schnorr signature client-side
-      // using the Web Crypto API for SHA-256 and BigInt arithmetic.
-
-      // Reconstruct csk_l: HKDF(sha256, r, sp_identifier, "pramaana-u2sso-child-key", 32)
-      // We need @noble/hashes for HKDF — but we're in browser. Use edge function approach instead.
-
-      // Call authenticate verify with a server-assisted sign (demo mode)
-      const { data: signData, error: signError } = await supabase.functions.invoke("demo-sign-challenge", {
-        body: {
-          master_secret_key: state.masterKey,
-          random_material_r: state.randomR,
-          sp_identifier: state.sp_identifier,
-          challenge: state.challenge,
-        },
-      });
-
-      if (signError || signData?.error) {
-        // Fallback: If demo-sign-challenge doesn't exist, show that we'd need client-side crypto
-        // For demo, submit the proof and let the edge function verify
-        throw new Error(signData?.error || signError?.message || "Signing failed");
-      }
-
-      setState((s) => ({ ...s, step: "verifying" }));
-
-      // Submit the signature to authenticate verify
-      const { data: authData, error: authError } = await supabase.functions.invoke("authenticate", {
-        body: {
-          action: "verify",
-          sp_identifier: state.sp_identifier,
-          pseudonym: state.pseudonym,
-          challenge: state.challenge,
-          signature: signData.signature,
-        },
-      });
-
-      if (authError) throw new Error(authData?.error || authError.message);
-
-      if (authData?.authenticated) {
-        setState((s) => ({
-          ...s,
-          step: "authenticated",
-          authMessage: authData.message,
-        }));
-      } else {
-        setState((s) => ({
-          ...s,
-          step: "failed",
-          error: authData?.error || "Authentication failed",
-        }));
-      }
-    } catch (err: any) {
-      setState((s) => ({ ...s, step: "error", error: err.message }));
-    }
-  };
+  const handleRegister = () => {};
+  const handleRequestChallenge = () => {};
+  const handleSignAndVerify = () => {};
 
   const reset = () => {
     setState({ step: "idle" });
@@ -581,6 +414,17 @@ function ASCAuthDemo() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        <Alert className="border-amber-500/30 bg-amber-500/5">
+          <KeyRound className="h-4 w-4 text-amber-400" />
+          <AlertTitle className="text-amber-300 text-sm">Disabled in this build</AlertTitle>
+          <AlertDescription className="text-xs text-muted-foreground">
+            The ASC U2SSO Schnorr login has no V3 backend — V3 personhood is the Semaphore
+            nullifier-spend, demonstrated live on the{" "}
+            <Link to="/register-service" className="text-secondary hover:underline">Register Service</Link>{" "}
+            page and the Dashboard. The flow below is illustrative only.
+          </AlertDescription>
+        </Alert>
+
         {/* Progress steps */}
         <div className="flex items-center gap-2 text-xs">
           {["Register Pseudonym", "Request Challenge", "Sign & Verify"].map((label, i) => (
@@ -647,7 +491,7 @@ function ASCAuthDemo() {
                 />
               )}
             </div>
-            <Button onClick={handleRegister} disabled={!phiHash || !spInput} className="w-full">
+            <Button onClick={handleRegister} disabled className="w-full">
               <Fingerprint className="mr-2 h-4 w-4" />
               Register Pseudonym with SP
             </Button>
@@ -793,10 +637,10 @@ const Verify = () => (
         Query the registry, authenticate with pseudonyms, and test Sybil resistance.
       </p>
     </div>
-    <ASCAuthDemo />
     <CheckIdentity />
     <Dashboard />
     <SybilDemo />
+    <ASCAuthDemo />
   </div>
 );
 
